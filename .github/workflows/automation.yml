@@ -2,8 +2,8 @@ name: Irzam Studio Background Outreach
 
 on:
   schedule:
-    - cron: '0 */1 * * *' # Every hour
-  workflow_dispatch: # Manual trigger button
+    - cron: '0 */1 * * *' # Har 1 ghante baad chalega
+  workflow_dispatch: # Manual test button
 
 jobs:
   run-agent:
@@ -14,7 +14,16 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install requests supabase
-      - name: Run Background Worker
+
+      # Step A: Pehle scraper run karke naye leads collect karega
+      - name: Fetch New Leads
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scraper.py
+
+      # Step B: Phir outreach worker baki bache pending leads ko email bhejega
+      - name: Run Cold Outreach Worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
