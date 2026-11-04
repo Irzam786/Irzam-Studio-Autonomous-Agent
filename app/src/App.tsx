@@ -193,6 +193,11 @@ export default function App() {
     try {
       // 1. Status & Cron
       const statusRes = await fetch('/api/status');
+      if (statusRes.status === 401) {
+        sessionStorage.removeItem('irzam_authenticated');
+        setIsAuthenticated(false);
+        return;
+      }
       if (statusRes.ok) {
         const sData = await statusRes.json();
         setCronStatus(sData.cron);
@@ -438,8 +443,12 @@ export default function App() {
           threadId: currentSession.id,
         }),
       });
+      if (!streamRes.ok) {
+        const errorData = await streamRes.json().catch(() => ({}));
+        throw new Error(errorData.error || `AI request failed with HTTP ${streamRes.status}`);
+      }
 
-      if (streamRes.ok && streamRes.body) {
+      if (streamRes.body) {
         const reader = streamRes.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
