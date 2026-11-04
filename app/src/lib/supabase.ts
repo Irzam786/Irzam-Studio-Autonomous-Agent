@@ -1,3 +1,5 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+
 import type {
   ChatSession, HostedDemo, GmailAccount, SystemConfig, Lead, AgentRule,
   TrainingMessage, Campaign, OutreachQueueItem, DailyReport, WorkflowRun,
@@ -11,7 +13,7 @@ export const DEFAULT_SUPABASE_ANON_KEY = '';
 export function initSupabase(_url: string, _anonKey: string): null {
   return null;
 }
-export function getSupabase(): null {
+export function getSupabase(): SupabaseClient | null {
   return null;
 }
 export async function testSupabaseConnection(_url: string, _anonKey: string): Promise<{ success: boolean; message: string }> {
