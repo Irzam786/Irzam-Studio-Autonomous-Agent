@@ -6,9 +6,9 @@
 -- 1. System Master Configuration (Single-Row Enforcement id = 1)
 CREATE TABLE IF NOT EXISTS public.system_config (
     id INTEGER PRIMARY KEY DEFAULT 1,
-    freellmapi_key TEXT DEFAULT '',
-    pin_code TEXT DEFAULT '1818',
-    netlify_token TEXT DEFAULT '',
+    freellmapi_key TEXT,
+    pin_code TEXT,
+    netlify_token TEXT,
     google_maps_api_key TEXT DEFAULT '',
     tavily_api_key TEXT DEFAULT '',
     hunter_api_key TEXT DEFAULT '',
@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS public.system_config (
     CONSTRAINT single_master_row CHECK (id = 1)
 );
 
-INSERT INTO public.system_config (id, freellmapi_key, pin_code, netlify_token, updated_at)
-VALUES (1, '', '1818', '', timezone('utc'::text, now()))
+INSERT INTO public.system_config (id, updated_at)
+VALUES (1, timezone('utc'::text, now()))
 ON CONFLICT (id) DO NOTHING;
 
 -- 2. Structured Operational Rules (Personal Training Memory)
@@ -41,15 +41,7 @@ CREATE TABLE IF NOT EXISTS public.agent_rules (
 
 CREATE INDEX IF NOT EXISTS idx_agent_rules_category ON public.agent_rules (category, is_active);
 
--- Seed Initial Active Operational Rules from Irzam Studio Training
-INSERT INTO public.agent_rules (category, title, rule_text, parameters, is_active, version)
-VALUES 
-('qualification', 'Minimum 50 Google Reviews', 'Prospect businesses must possess at least 50 genuine Google reviews retrieved via Google Places userRatingCount.', '{"min_reviews": 50}'::jsonb, true, 1),
-('qualification', 'Working Official Website Required', 'Candidate businesses must have an active, working website domain for tailored architecture review.', '{"require_website": true}'::jsonb, true, 1),
-('outreach_style', 'Obsidian Executive Tone', 'Draft cold outreach under 140 words, lead with high-conviction value proposition, and attach interactive live demo link.', '{"max_words": 140, "tone": "executive_direct"}'::jsonb, true, 1),
-('timing', '5 PM Discovery & 6 PM Dispatch', 'Autonomous research initiates at 5:00 PM PKT; scheduled personalized outreach transmits at 6:00 PM PKT.', '{"discovery_pkt": "17:00", "dispatch_pkt": "18:00"}'::jsonb, true, 1),
-('follow_up', 'Two-Stage Graceful Follow-Up', 'Stage 1 follow-up after 3 days; Stage 2 follow-up after an additional 3 days. Cancel immediately upon client reply or opt-out.', '{"stage_1_days": 3, "stage_2_days": 3}'::jsonb, true, 1)
-ON CONFLICT DO NOTHING;
+-- No sample training rules are inserted. Add only operator-approved rules through the authenticated app.
 
 -- 3. Training Conversations & Messages
 CREATE TABLE IF NOT EXISTS public.training_conversations (
@@ -111,10 +103,7 @@ CREATE TABLE IF NOT EXISTS public.campaigns (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- Seed default campaign
-INSERT INTO public.campaigns (name, niche, city, min_reviews, daily_limit, status, pitch_angle)
-VALUES ('Institutional Wealth & Fintech Q4', 'Institutional Fintech', 'New York, NY', 50, 10, 'active', 'Autonomous Treasury & Risk Engine')
-ON CONFLICT DO NOTHING;
+-- No sample campaign is inserted; campaigns are created by the operator.
 
 -- 6. Hourly Outreach Queue Table (Persistent 1-email-per-hour slots)
 CREATE TABLE IF NOT EXISTS public.outreach_queue (
@@ -279,14 +268,16 @@ ALTER TABLE public.workflow_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.daily_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.suppression_list ENABLE ROW LEVEL SECURITY;
 
--- Allow anonymous reads for public demo viewing and client display
-CREATE POLICY "Public read demo deployments" ON public.client_demos FOR SELECT USING (true);
-CREATE POLICY "Public read chat messages" ON public.chat_messages FOR SELECT USING (true);
-CREATE POLICY "Public insert chat messages" ON public.chat_messages FOR INSERT WITH CHECK (true);
-CREATE POLICY "Public read leads" ON public.leads FOR SELECT USING (true);
-CREATE POLICY "Public read system config" ON public.system_config FOR SELECT USING (true);
-CREATE POLICY "Public read agent rules" ON public.agent_rules FOR SELECT USING (true);
-CREATE POLICY "Public read campaigns" ON public.campaigns FOR SELECT USING (true);
-CREATE POLICY "Public read outreach queue" ON public.outreach_queue FOR SELECT USING (true);
-CREATE POLICY "Public read daily reports" ON public.daily_reports FOR SELECT USING (true);
-CREATE POLICY "Public read workflow runs" ON public.workflow_runs FOR SELECT USING (true);
+-- Browser roles receive no access to operational tables. The server uses service_role.
+REVOKE ALL ON TABLE
+  public.system_config, public.agent_rules, public.training_conversations, public.training_messages,
+  public.leads, public.campaigns, public.outreach_queue, public.gmail_tokens, public.client_demos,
+  public.chat_messages, public.integration_connections, public.integration_usage, public.workflow_runs,
+  public.daily_reports, public.suppression_list
+FROM anon, authenticated;
+GRANT ALL ON TABLE
+  public.system_config, public.agent_rules, public.training_conversations, public.training_messages,
+  public.leads, public.campaigns, public.outreach_queue, public.gmail_tokens, public.client_demos,
+  public.chat_messages, public.integration_connections, public.integration_usage, public.workflow_runs,
+  public.daily_reports, public.suppression_list
+TO service_role;
