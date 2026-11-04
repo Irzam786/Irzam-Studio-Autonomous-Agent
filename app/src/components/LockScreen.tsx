@@ -159,7 +159,7 @@ export const LockScreen: React.FC<LockScreenProps> = ({ onUnlock }) => {
 
           <div className="text-center pt-1 border-t border-white/[0.06]">
             <span className="text-[11px] text-zinc-500 font-mono">
-              Default Operative PIN: <strong className="text-zinc-300">1818</strong>
+              Owner PIN is securely configured for this deployment.
             </span>
           </div>
         </div>
