@@ -1,9 +1,8 @@
 import serverless from 'serverless-http';
+import { app } from '../../server/app';
 
-// Set this before dynamically importing the Express app so it does not
-// start a listening server or attach the local Vite development middleware.
+// Netlify's synchronous function limit is 60 seconds. The Qwen request uses
+// this flag to stop at 55 seconds and leave time for the HTTP response.
 process.env.IRZAM_NETLIFY_FUNCTION = 'true';
-
-const { app } = await import('../../server');
 
 export const handler = serverless(app);
