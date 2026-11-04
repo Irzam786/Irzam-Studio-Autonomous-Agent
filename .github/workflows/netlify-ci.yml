@@ -28,5 +28,3 @@ jobs:
         run: npm run lint
       - name: Production frontend build
         run: npm run build
-      - name: Bundle Netlify Functions
-        run: npx --yes netlify-cli build
