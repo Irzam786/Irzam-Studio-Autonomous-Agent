@@ -29,6 +29,6 @@ jobs:
       - name: Verify Netlify Function CommonJS bundle
         run: |
           npx esbuild netlify/functions/api.ts --bundle --platform=node --target=node22 --format=cjs --external:express --outfile=/tmp/irzam-netlify-api.cjs --metafile=/tmp/irzam-netlify-api-meta.json
-          node -e "const meta = require('/tmp/irzam-netlify-api-meta.json'); const inputs = Object.keys(meta.inputs); const blocked = inputs.filter((p) => /node_modules\\/(vite|@vitejs\\/devtools)\\//.test(p)); if (blocked.length) { console.error('Unexpected Vite dependencies in function bundle:', blocked); process.exit(1); } console.log('CommonJS function bundle passed; Vite is not in the dependency graph.');"
+          node -e "const meta = require('/tmp/irzam-netlify-api-meta.json'); const inputs = Object.keys(meta.inputs); const blocked = inputs.filter((p) => p.includes('node_modules/vite/') || p.includes('node_modules/@vitejs/devtools/')); if (blocked.length) { console.error('Unexpected Vite dependencies in function bundle:', blocked); process.exit(1); } console.log('CommonJS function bundle passed; Vite is not in the dependency graph.');"
       - name: Production frontend build
         run: npm run build
