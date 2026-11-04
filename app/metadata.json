@@ -1,0 +1,8 @@
+{
+  "name": "Irzam Studio",
+  "description": "Executive AI Agent Platform featuring Qwen multimodal intelligence, real Google OAuth Gmail inbox automation, Supabase cloud database integration, and live client demo deployment.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

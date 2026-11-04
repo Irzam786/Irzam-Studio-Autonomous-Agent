@@ -1,0 +1,17 @@
+{
+  "name": "Irzam Studio",
+  "short_name": "IrzamStudio",
+  "description": "Executive AI Agent Platform featuring Qwen multimodal intelligence, Gmail automation, and client demo deployment.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050508",
+  "theme_color": "#07070a",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
