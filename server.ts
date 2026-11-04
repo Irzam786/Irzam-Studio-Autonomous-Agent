@@ -1,6 +1,5 @@
 import express from 'express';
 import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -1346,20 +1345,27 @@ app.post('/api/chat/stream', async (req, res) => {
   }
 });
 
-// Vite Middleware
-if (process.env.NODE_ENV !== 'production') {
-  const vite = await createViteServer({
-    server: { middlewareMode: true, hmr: process.env.DISABLE_HMR !== 'true' },
-    appType: 'spa',
-  });
-  app.use(vite.middlewares);
-} else {
-  app.use(express.static(path.resolve(__dirname, 'dist')));
-  app.get('*', (req, res) => {
-    res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+// Local Node runtime serves Vite or the production build directly.
+// Netlify serves the Vite dist folder from its CDN and routes /api/* to
+// netlify/functions/api.ts, so this Express app must not open a port there.
+if (!process.env.IRZAM_NETLIFY_FUNCTION) {
+  if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true, hmr: process.env.DISABLE_HMR !== 'true' },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Irzam Studio] Platform Online on port ${PORT}`);
   });
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Irzam Studio] Platform Online on port ${PORT}`);
-});
+export { app };
