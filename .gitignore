@@ -6,3 +6,4 @@ dist/
 data_system_config.json
 *.log
 .DS_Store
+.netlify/
