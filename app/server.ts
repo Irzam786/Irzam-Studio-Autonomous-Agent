@@ -1300,7 +1300,7 @@ app.post('/api/chat', async (req, res) => {
     const result = await generateQwenCompletion(String(message), Array.isArray(history) ? history : [], selectedModel);
     return res.json({ response: result.content, modelUsed: result.model, autoRouted: Boolean(autoRoute), deployedDemo: null, timestamp: new Date().toISOString() });
   } catch (error: any) {
-    addLog('AI', 'error', `Qwen generation failed: ${error.message}`);
+    addLog('FREEMODEL', 'error', `Qwen generation failed: ${error.message}`);
     return res.status(502).json({ error: error.message, modelUsed: null });
   }
 });
@@ -1336,7 +1336,7 @@ app.post('/api/chat/stream', async (req, res) => {
     }
     return res.end();
   } catch (error: any) {
-    addLog('AI', 'error', `Qwen stream failed: ${error.message}`);
+    addLog('FREEMODEL', 'error', `Qwen stream failed: ${error.message}`);
     if (!aborted) {
       const messageText = `AI model unavailable: ${error.message}`;
       send('chunk', { text: messageText });
