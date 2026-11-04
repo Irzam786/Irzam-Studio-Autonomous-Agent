@@ -1,10 +1,10 @@
 import express from 'express';
+import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
@@ -62,7 +62,7 @@ interface SystemConfig {
 }
 
 const config: SystemConfig = {
-  ownerPin: process.env.OWNER_PIN || '1818',
+  ownerPin: process.env.OWNER_PIN || '',
   freellmApiKey: process.env.FREELLM_API_KEY || '',
   freellmBaseUrl: process.env.FREELLM_BASE_URL || 'https://api.freellmapi.com/v1',
   selectedModel: 'Qwen 3.8 Max',
@@ -70,26 +70,26 @@ const config: SystemConfig = {
   systemPrompt: `You are the lead intelligence operative and digital architect for Irzam Studio.
 You analyze multimodal intelligence (documents, images, videos, code dossiers), manage automated outreach across connected Google Workspace Gmail accounts, and generate full-stack client demo websites.
 When asked to build, code, or demo a website, output the complete, self-contained, working HTML code inside a \`\`\`html ... \`\`\` block with modern Tailwind CSS (via CDN) and dark, sleek, polished aesthetics ready for instant Netlify or sandbox live deployment.`,
-  autoDeployDemos: true,
+  autoDeployDemos: false,
   replyWatcherIntervalMinutes: 60,
   soundAlerts: true,
   netlify: {
     token: process.env.NETLIFY_TOKEN || '',
     siteId: process.env.NETLIFY_SITE_ID || '',
     siteName: process.env.NETLIFY_SITE_NAME || 'irzam-studio-demos',
-    connected: Boolean(process.env.NETLIFY_TOKEN),
+    connected: false,
     lastDeployAt: undefined,
   },
   googleOAuth: {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
-    connected: Boolean(process.env.GOOGLE_CLIENT_ID),
+    connected: false,
     redirectUri: process.env.APP_URL ? `${process.env.APP_URL}/oauth/callback` : 'http://localhost:3000/oauth/callback',
   },
   supabase: {
     url: process.env.SUPABASE_URL || 'https://fgksgytuglpmzhqcdasb.supabase.co',
     anonKey: process.env.SUPABASE_ANON_KEY || 'sb_publishable_Z8IOLaPoA7BVExW3PcHAgg_OSPMDAi1',
-    connected: true,
+    connected: false,
     lastSyncAt: undefined,
   },
   googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || '',
@@ -99,16 +99,35 @@ When asked to build, code, or demo a website, output the complete, self-containe
 };
 
 function getSupabaseServerClient() {
-  if (config.supabase.url && config.supabase.anonKey) {
-    try {
-      return createClient(config.supabase.url, config.supabase.anonKey, {
-        auth: { persistSession: false },
-      });
-    } catch (e) {
-      return null;
-    }
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!config.supabase.url || !serviceRoleKey) return null;
+  try {
+    return createClient(config.supabase.url, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+  } catch {
+    return null;
   }
-  return null;
+}
+
+async function getVaultSecret(name: string): Promise<string | null> {
+  const client = getSupabaseServerClient();
+  if (!client) return null;
+  const { data, error } = await client.rpc('get_irzam_secret', { secret_name: name });
+  if (error || typeof data !== 'string' || !data) return null;
+  return data;
+}
+
+function signOwnerSession(expiresAt: string): string {
+  const secret = process.env.SESSION_SECRET;
+  if (!secret || secret.length < 32) throw new Error('SESSION_SECRET (at least 32 characters) is required.');
+  return createHmac('sha256', secret).update(expiresAt).digest('hex');
+}
+
+function readCookie(req: express.Request, name: string): string | null {
+  const cookieHeader = req.headers.cookie || '';
+  const entry = cookieHeader.split(';').map(v => v.trim()).find(v => v.startsWith(name + '='));
+  return entry ? decodeURIComponent(entry.slice(name.length + 1)) : null;
 }
 
 // Data Stores
@@ -128,105 +147,7 @@ interface HostedDemo {
   liveNetlifyUrl?: string;
 }
 
-const initialDemos: HostedDemo[] = [
-  {
-    id: 'demo-apex-wealth',
-    slug: 'apex-capital-portfolio',
-    title: 'Apex Wealth & Institutional Treasury',
-    clientName: 'Apex Capital Partners',
-    createdAt: new Date(Date.now() - 3600000 * 4).toISOString(),
-    expiresAt: new Date(Date.now() + 3600000 * 44).toISOString(),
-    framework: 'Tailwind + Alpine.js',
-    status: 'active',
-    views: 78,
-    previewUrl: '/demo/demo-apex-wealth',
-    deployTarget: 'edge_sandbox',
-    liveNetlifyUrl: 'https://apex-portfolio.netlify.app',
-    htmlContent: `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Apex Wealth & Capital — Irzam Studio Demo</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-  <style>body{font-family:'Plus Jakarta Sans',sans-serif;background:#050507;color:#f4f4f5;}</style>
-</head>
-<body class="min-h-screen bg-[#050507] text-zinc-100 p-6 md:p-12">
-  <div class="max-w-6xl mx-auto space-y-8">
-    <header class="flex justify-between items-center border-b border-zinc-800 pb-6">
-      <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-white via-zinc-200 to-zinc-400 flex items-center justify-center font-bold text-black text-xl shadow-lg shadow-white/10">✦</div>
-        <div>
-          <h1 class="text-xl font-extrabold tracking-tight">Apex Capital Institutional</h1>
-          <p class="text-xs text-zinc-400 font-mono">Autonomous Risk & Treasury Engine</p>
-        </div>
-      </div>
-      <div class="flex items-center gap-4">
-        <span class="inline-flex items-center gap-1.5 text-xs bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 px-3 py-1 rounded-full font-mono">
-          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Markets Live
-        </span>
-        <button class="bg-white text-black font-extrabold text-xs px-4 py-2 rounded-xl hover:bg-zinc-200 transition">Book Demo Call</button>
-      </div>
-    </header>
-
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-      <div class="bg-zinc-900/60 border border-zinc-800 p-6 rounded-2xl">
-        <p class="text-xs text-zinc-400 font-medium">Total Assets Under Management</p>
-        <p class="text-3xl font-black mt-2 text-white font-mono">$42,850,290.00</p>
-        <p class="text-xs text-emerald-400 mt-2 flex items-center gap-1">▲ +14.8% vs last month</p>
-      </div>
-      <div class="bg-zinc-900/60 border border-zinc-800 p-6 rounded-2xl">
-        <p class="text-xs text-zinc-400 font-medium">Hedging Yield (Annualized)</p>
-        <p class="text-3xl font-black mt-2 text-white font-mono">19.4%</p>
-        <p class="text-xs text-emerald-400 mt-2 flex items-center gap-1">▲ Alpha optimized</p>
-      </div>
-      <div class="bg-zinc-900/60 border border-zinc-800 p-6 rounded-2xl">
-        <p class="text-xs text-zinc-400 font-medium">Automated Liquidity Health</p>
-        <p class="text-3xl font-black mt-2 text-white font-mono">99.98%</p>
-        <p class="text-xs text-cyan-400 mt-2 flex items-center gap-1">■ 0 Slippage detected</p>
-      </div>
-    </div>
-  </div>
-</body>
-</html>`
-  },
-  {
-    id: 'demo-lumina-studio',
-    slug: 'lumina-creative-ai',
-    title: 'Lumina Creative - AI Video Studio',
-    clientName: 'Lumina Media Group',
-    createdAt: new Date(Date.now() - 3600000 * 12).toISOString(),
-    expiresAt: new Date(Date.now() + 3600000 * 36).toISOString(),
-    framework: 'Tailwind + Modern Web',
-    status: 'active',
-    views: 135,
-    previewUrl: '/demo/demo-lumina-studio',
-    deployTarget: 'netlify',
-    liveNetlifyUrl: 'https://lumina-studio.netlify.app',
-    htmlContent: `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lumina Creative Studio — Irzam Studio Demo</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>body{background:#000;color:#fff;font-family:system-ui,sans-serif;}</style>
-</head>
-<body class="p-8 max-w-5xl mx-auto">
-  <div class="text-center py-12 space-y-4">
-    <div class="inline-block px-3 py-1 bg-white/10 border border-white/20 rounded-full text-white text-xs font-semibold tracking-wide font-mono">
-      IRZAM STUDIO DIRECT DISPATCH
-    </div>
-    <h1 class="text-5xl font-black tracking-tight text-white">Generate High-Budget Ads In Seconds</h1>
-    <p class="text-zinc-400 max-w-xl mx-auto text-sm leading-relaxed">Turn scripts into broadcast-quality 4K cinematics with synthetic actors, voice cloning, and zero filming crews.</p>
-  </div>
-</body>
-</html>`
-  }
-];
-
-let hostedDemos: HostedDemo[] = [...initialDemos];
+let hostedDemos: HostedDemo[] = [];
 
 interface GmailAccount {
   id: string;
@@ -245,38 +166,7 @@ interface GmailAccount {
   refreshToken?: string;
 }
 
-let gmailAccounts: GmailAccount[] = [
-  {
-    id: 'gmail-1',
-    email: 'irzam.growth@irzamstudio.ai',
-    label: 'Primary Outreach Account (OAuth Verified)',
-    connected: true,
-    connectedAt: new Date(Date.now() - 3600000 * 72).toISOString(),
-    dailySendQuota: 500,
-    sentToday: 154,
-    inboxUnreadCount: 4,
-    replyWatcherActive: true,
-    lastSyncAt: new Date(Date.now() - 3600000 * 0.4).toISOString(),
-    isPrimary: true,
-    hasRefreshToken: true,
-    tokenScope: 'https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email',
-  },
-  {
-    id: 'gmail-2',
-    email: 'deals.closer@clientflow.co',
-    label: 'Deal Closer & Inbound Monitor',
-    connected: true,
-    connectedAt: new Date(Date.now() - 3600000 * 48).toISOString(),
-    dailySendQuota: 500,
-    sentToday: 42,
-    inboxUnreadCount: 1,
-    replyWatcherActive: true,
-    lastSyncAt: new Date(Date.now() - 3600000 * 0.4).toISOString(),
-    isPrimary: false,
-    hasRefreshToken: true,
-    tokenScope: 'https://mail.google.com/',
-  }
-];
+let gmailAccounts: GmailAccount[] = [];
 
 interface DetectedReply {
   id: string;
@@ -292,34 +182,7 @@ interface DetectedReply {
   suggestedResponse?: string;
 }
 
-let detectedReplies: DetectedReply[] = [
-  {
-    id: 'rep-1',
-    accountId: 'gmail-1',
-    fromName: 'Marcus Vance',
-    fromEmail: 'm.vance@apexcapital.org',
-    subject: 'Re: Prototype Demo for Apex Capital Portfolio',
-    snippet: 'Hi Irzam, we reviewed the temporary demo website deployed by Irzam Studio. The institutional dashboard is exactly what our partners were looking for. Can we set up a 15-min zoom on Thursday?',
-    intent: 'SCHEDULE_CALL',
-    detectedAt: new Date(Date.now() - 3600000 * 0.8).toISOString(),
-    status: 'unread',
-    demoMentioned: 'Apex Wealth & Institutional Treasury',
-    suggestedResponse: 'Hi Marcus,\n\nDelighted that the institutional dashboard prototype aligns with Apex Capital’s vision! I have reserved a 15-minute slot for us this Thursday at 2:00 PM EST to walk through the custom treasury deployment.\n\nLooking forward to speaking,\nIrzam Shahid'
-  },
-  {
-    id: 'rep-2',
-    accountId: 'gmail-2',
-    fromName: 'Elena Rostova',
-    fromEmail: 'elena@luminamedia.com',
-    subject: 'Re: Custom AI Video Engine Concept',
-    snippet: 'Saw the interactive Netlify demo link! Love the design and flow. What is the licensing cost if we want this deployed on our own custom sub-domain by next week?',
-    intent: 'PRICING_INQUIRY',
-    detectedAt: new Date(Date.now() - 3600000 * 1.6).toISOString(),
-    status: 'unread',
-    demoMentioned: 'Lumina Creative - AI Video Studio',
-    suggestedResponse: 'Hi Elena,\n\nThrilled to hear the team enjoyed the live Netlify demo! We can deploy this on your custom subdomain within 48 hours. I would be happy to share our transparent tier breakdown—are you free for a quick 10-minute sync tomorrow?'
-  }
-];
+let detectedReplies: DetectedReply[] = [];
 
 interface Lead {
   id: string;
@@ -342,101 +205,7 @@ interface Lead {
   last_contacted_at?: string;
 }
 
-let trackedLeads: Lead[] = [
-  {
-    id: 'lead-1',
-    business_name: 'Apex Wealth Partners',
-    email: 'm.vance@apexcapital.org',
-    phone: '+1 (212) 555-0192',
-    city: 'New York, NY',
-    niche: 'Institutional Fintech',
-    status: 'replied',
-    notes: 'Replied to 6 PM outreach asking for a 15-min zoom on Thursday.',
-    demo_url: 'https://apex-portfolio.netlify.app',
-    google_rating: 4.9,
-    google_reviews_count: 84,
-    website: 'https://apexcapital.org',
-    email_source: 'official_website',
-    email_verified: true,
-    created_at: new Date(Date.now() - 3600000 * 24).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 0.8).toISOString(),
-    last_contacted_at: new Date(Date.now() - 3600000 * 6).toISOString(),
-  },
-  {
-    id: 'lead-2',
-    business_name: 'Lumina Creative Studio',
-    email: 'elena@luminamedia.com',
-    phone: '+1 (512) 555-8391',
-    city: 'Austin, TX',
-    niche: 'Digital Media & AI Studio',
-    status: 'replied',
-    notes: 'Inquired about custom subdomain deployment pricing.',
-    demo_url: 'https://lumina-studio.netlify.app',
-    google_rating: 4.8,
-    google_reviews_count: 62,
-    website: 'https://luminamedia.com',
-    email_source: 'hunter_io',
-    email_verified: true,
-    created_at: new Date(Date.now() - 3600000 * 20).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 1.6).toISOString(),
-    last_contacted_at: new Date(Date.now() - 3600000 * 8).toISOString(),
-  },
-  {
-    id: 'lead-3',
-    business_name: 'Beacon Retail & Commerce',
-    email: 'sarah@beaconretail.com',
-    phone: '+1 (312) 555-4420',
-    city: 'Chicago, IL',
-    niche: 'Retail Tech & Omni-channel',
-    status: 'contacted',
-    notes: 'Dispatched in 6 PM batch via connected Google Workspace Gmail.',
-    demo_url: 'https://apex-portfolio.netlify.app',
-    google_rating: 4.7,
-    google_reviews_count: 91,
-    website: 'https://beaconretail.com',
-    email_source: 'official_website',
-    email_verified: true,
-    created_at: new Date(Date.now() - 3600000 * 12).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 3).toISOString(),
-    last_contacted_at: new Date(Date.now() - 3600000 * 3).toISOString(),
-  },
-  {
-    id: 'lead-4',
-    business_name: 'Nexus Health Systems',
-    email: 'contact@nexushealthtech.io',
-    phone: '+1 (415) 555-7781',
-    city: 'San Francisco, CA',
-    niche: 'HealthTech & Telehealth',
-    status: 'pending',
-    notes: 'Discovered during 5 PM PKT discovery engine run. Ready for 6 PM dispatch.',
-    demo_url: 'https://apex-portfolio.netlify.app',
-    google_rating: 4.9,
-    google_reviews_count: 112,
-    website: 'https://nexushealthtech.io',
-    email_source: 'google_places',
-    email_verified: true,
-    created_at: new Date(Date.now() - 3600000 * 5).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 5).toISOString(),
-  },
-  {
-    id: 'lead-5',
-    business_name: 'Horizon Global Logistics',
-    email: 'ops@horizoncargoglobal.ae',
-    phone: '+971 4 555 8821',
-    city: 'Dubai, UAE',
-    niche: 'Global Logistics & Freight',
-    status: 'pending',
-    notes: 'Scraped during 5 PM PKT discovery phase. Tailored freight tracking prototype ready.',
-    demo_url: 'https://apex-portfolio.netlify.app',
-    google_rating: 4.6,
-    google_reviews_count: 55,
-    website: 'https://horizoncargoglobal.ae',
-    email_source: 'tavily_search',
-    email_verified: true,
-    created_at: new Date(Date.now() - 3600000 * 4).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 4).toISOString(),
-  }
-];
+let trackedLeads: Lead[] = [];
 
 // Structured Operational Rules (Personal Training Memory)
 interface AgentRule {
@@ -451,63 +220,7 @@ interface AgentRule {
   updated_at: string;
 }
 
-let agentRules: AgentRule[] = [
-  {
-    id: 'rule-1',
-    category: 'qualification',
-    title: 'Minimum 50 Google Reviews Required',
-    rule_text: 'Prospect businesses must possess at least 50 genuine Google reviews retrieved via Google Places userRatingCount to qualify.',
-    parameters: { min_reviews: 50 },
-    is_active: true,
-    version: 1,
-    created_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-  },
-  {
-    id: 'rule-2',
-    category: 'qualification',
-    title: 'Official Working Website Required',
-    rule_text: 'Candidate businesses must have an active, working website domain for tailored architecture review.',
-    parameters: { require_website: true },
-    is_active: true,
-    version: 1,
-    created_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-  },
-  {
-    id: 'rule-3',
-    category: 'outreach_style',
-    title: 'Concise Obsidian Executive Tone (<140 words)',
-    rule_text: 'Draft cold outreach under 140 words, lead with high-conviction value proposition, and attach interactive live demo link.',
-    parameters: { max_words: 140, tone: 'executive_direct' },
-    is_active: true,
-    version: 1,
-    created_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-  },
-  {
-    id: 'rule-4',
-    category: 'timing',
-    title: '5 PM PKT Discovery & 6 PM PKT Dispatch Slots',
-    rule_text: 'Autonomous research initiates at 5:00 PM PKT; scheduled personalized outreach transmits at 6:00 PM PKT.',
-    parameters: { discovery_pkt: '17:00', dispatch_pkt: '18:00' },
-    is_active: true,
-    version: 1,
-    created_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-  },
-  {
-    id: 'rule-5',
-    category: 'follow_up',
-    title: 'Two-Stage Graceful Follow-Up',
-    rule_text: 'Stage 1 follow-up after 3 days; Stage 2 follow-up after an additional 3 days. Cancel immediately upon client reply or opt-out.',
-    parameters: { stage_1_days: 3, stage_2_days: 3 },
-    is_active: true,
-    version: 1,
-    created_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-  }
-];
+let agentRules: AgentRule[] = [];
 
 // Training Conversations
 interface TrainingMessage {
@@ -518,21 +231,7 @@ interface TrainingMessage {
   created_at: string;
 }
 
-let trainingMessages: TrainingMessage[] = [
-  {
-    id: 'tm-1',
-    role: 'user',
-    content: 'Agent, from now on, only qualify businesses with at least 50 Google reviews. We must ensure they have a working website and verified email before scheduling outreach.',
-    created_at: new Date(Date.now() - 3600000 * 24).toISOString(),
-  },
-  {
-    id: 'tm-2',
-    role: 'assistant',
-    content: 'Understood. I have recorded two active operational rules:\n1. Qualification: Minimum 50 Google reviews (userRatingCount ≥ 50).\n2. Qualification: Working official website & verified email required.\nThese directives will be strictly enforced during the 5:00 PM PKT autonomous research pipeline.',
-    extracted_rules_count: 2,
-    created_at: new Date(Date.now() - 3600000 * 23.9).toISOString(),
-  }
-];
+let trainingMessages: TrainingMessage[] = [];
 
 // Campaigns Store
 interface Campaign {
@@ -549,34 +248,7 @@ interface Campaign {
   updated_at: string;
 }
 
-let campaigns: Campaign[] = [
-  {
-    id: 'camp-1',
-    name: 'Institutional Fintech Q4 Acceleration',
-    niche: 'Institutional Fintech',
-    city: 'New York, NY',
-    min_reviews: 50,
-    daily_limit: 10,
-    status: 'active',
-    pitch_angle: 'Autonomous Treasury & Risk Engine',
-    demo_slug: 'apex-capital-portfolio',
-    created_at: new Date(Date.now() - 3600000 * 72).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 72).toISOString(),
-  },
-  {
-    id: 'camp-2',
-    name: 'Digital Media & AI Video Studios',
-    niche: 'Digital Media & AI Studio',
-    city: 'Austin, TX',
-    min_reviews: 40,
-    daily_limit: 10,
-    status: 'active',
-    pitch_angle: 'Broadcast-Quality 4K AI Ads Engine',
-    demo_slug: 'lumina-creative-ai',
-    created_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-    updated_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-  }
-];
+let campaigns: Campaign[] = [];
 
 // Hourly Outreach Queue Store
 interface OutreachQueueItem {
@@ -596,34 +268,7 @@ interface OutreachQueueItem {
   created_at: string;
 }
 
-let outreachQueue: OutreachQueueItem[] = [
-  {
-    id: 'queue-1',
-    lead_id: 'lead-4',
-    business_name: 'Nexus Health Systems',
-    recipient_email: 'contact@nexushealthtech.io',
-    subject: 'Interactive Prototype & AI Patient Scheduling for Nexus Health Systems',
-    body_preview: 'Hi Nexus Health Team, we engineered an interactive digital prototype showcasing automated patient intake...',
-    attached_demo_url: 'https://apex-portfolio.netlify.app',
-    scheduled_for_pkt: new Date(Date.now() + 3600000 * 1).toISOString(),
-    status: 'scheduled',
-    followup_stage: 0,
-    created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-  },
-  {
-    id: 'queue-2',
-    lead_id: 'lead-5',
-    business_name: 'Horizon Global Logistics',
-    recipient_email: 'ops@horizoncargoglobal.ae',
-    subject: 'Real-Time Fleet Dispatch & Cargo Analytics Prototype',
-    body_preview: 'Hi Horizon Operations, our studio developed a live interactive freight portal tailored for your Dubai logistics network...',
-    attached_demo_url: 'https://apex-portfolio.netlify.app',
-    scheduled_for_pkt: new Date(Date.now() + 3600000 * 2).toISOString(),
-    status: 'scheduled',
-    followup_stage: 0,
-    created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-  }
-];
+let outreachQueue: OutreachQueueItem[] = [];
 
 // Daily Reports Store
 interface DailyReport {
@@ -647,33 +292,7 @@ interface DailyReport {
   status: 'saved' | 'sent_to_email';
 }
 
-let dailyReports: DailyReport[] = [
-  {
-    id: 'rep-20261103',
-    report_date: '2026-11-03',
-    generated_at_pkt: new Date(Date.now() - 3600000 * 24).toISOString(),
-    researched_count: 24,
-    qualified_count: 12,
-    google_reviews_checked: 24,
-    emails_discovered: 12,
-    emails_verified: 12,
-    emails_scheduled: 10,
-    emails_sent: 10,
-    failed_attempts: 0,
-    replies_received: 2,
-    responses_generated: 2,
-    followups_sent: 4,
-    demos_generated: 2,
-    quota_usage_summary: {
-      google_places_calls: 28,
-      tavily_searches: 15,
-      hunter_verifications: 12,
-      freellm_tokens: 14200
-    },
-    summary_text: 'Daily target of 10 outreach dispatches achieved. 2 positive replies received (Marcus Vance, Elena Rostova). All follow-ups synced.',
-    status: 'saved',
-  }
-];
+let dailyReports: DailyReport[] = [];
 
 // Workflow Runs Store
 interface WorkflowRun {
@@ -687,35 +306,7 @@ interface WorkflowRun {
   error_details?: string;
 }
 
-let workflowRuns: WorkflowRun[] = [
-  {
-    id: 'wf-1',
-    workflow_type: 'discovery_5pm',
-    status: 'completed',
-    started_at: new Date(Date.now() - 3600000 * 14).toISOString(),
-    completed_at: new Date(Date.now() - 3600000 * 13.9).toISOString(),
-    items_processed: 12,
-    summary: 'Autonomous discovery crawled 12 verified leads with >= 50 Google reviews.',
-  },
-  {
-    id: 'wf-2',
-    workflow_type: 'outreach_6pm',
-    status: 'completed',
-    started_at: new Date(Date.now() - 3600000 * 13).toISOString(),
-    completed_at: new Date(Date.now() - 3600000 * 12.9).toISOString(),
-    items_processed: 10,
-    summary: 'Dispatched 10 personalized outreach emails with interactive demo links.',
-  },
-  {
-    id: 'wf-3',
-    workflow_type: 'inbox_watcher_hourly',
-    status: 'completed',
-    started_at: new Date(Date.now() - 3600000 * 1).toISOString(),
-    completed_at: new Date(Date.now() - 3600000 * 0.98).toISOString(),
-    items_processed: 2,
-    summary: 'Hourly watcher scanned all connected accounts. 0 new inbound objections detected.',
-  }
-];
+let workflowRuns: WorkflowRun[] = [];
 
 // Connector Catalog Definition (Base44 Inspired Connector Marketplace)
 interface ConnectorCatalogItem {
@@ -750,7 +341,7 @@ let connectorCatalog: ConnectorCatalogItem[] = [
     status: config.freellmApiKey ? 'connected' : 'disconnected',
     enabledForAgent: true,
     maskedKey: config.freellmApiKey ? `****${config.freellmApiKey.slice(-4)}` : undefined,
-    lastVerifiedAt: new Date().toISOString(),
+    
     allowedCapabilities: ['text_generation', 'code_generation', 'multimodal_vision', 'fast_routing'],
     usageInfo: { used: 34200, limit: 100000, unit: 'tokens', resetDate: 'End of Month' }
   },
@@ -816,8 +407,8 @@ let connectorCatalog: ConnectorCatalogItem[] = [
     description: 'Secondary business discovery engine for candidate companies and regional directory verification.',
     category: 'business_discovery',
     authType: 'api_key',
-    status: 'connected',
-    enabledForAgent: true,
+    status: 'disconnected',
+    enabledForAgent: false,
     lastVerifiedAt: new Date().toISOString(),
     allowedCapabilities: ['osm_directory_search', 'geocoding', 'address_resolution'],
     usageInfo: { used: 88, limit: 5000, unit: 'queries' }
@@ -843,7 +434,7 @@ let connectorCatalog: ConnectorCatalogItem[] = [
     description: 'Secondary research transport providing real-time multi-source web verification via Model Context Protocol.',
     category: 'web_research',
     authType: 'mcp',
-    status: 'connected',
+    status: 'disconnected',
     enabledForAgent: true,
     lastVerifiedAt: new Date().toISOString(),
     allowedCapabilities: ['mcp_query', 'news_retrieval', 'snippet_extraction'],
@@ -960,65 +551,18 @@ function saveLocalSystemConfig() {
 }
 
 async function syncConfigToSupabase() {
-  saveLocalSystemConfig();
-  const client = getSupabaseServerClient();
-  if (!client) return;
-  try {
-    const payload: any = {
-      id: 1,
-      pin_code: String(config.ownerPin).trim(),
-      freellmapi_key: config.freellmApiKey || '',
-      netlify_token: config.netlify.token || '',
-      google_maps_api_key: config.googleMapsApiKey || '',
-      tavily_api_key: config.tavilyApiKey || '',
-      hunter_api_key: config.hunterApiKey || '',
-      prospeo_api_key: config.prospeoApiKey || '',
-      updated_at: new Date().toISOString()
-    };
-
-    const { error: upsertErr } = await client.from('system_config').upsert(payload);
-    if (upsertErr) {
-      await client.from('system_config').update(payload).eq('id', 1);
-    }
-    addLog('SUPABASE', 'success', '[SUPABASE] system_config (id: 1) synchronized.');
-  } catch (err: any) {
-    addLog('SUPABASE', 'warn', `Supabase sync: ${err.message}`);
-  }
+  // Credentials live in Supabase Vault, never in system_config or local JSON.
+  return;
 }
 
 async function loadStoredConfigFromSupabase() {
-  loadLocalSystemConfig();
-  const client = getSupabaseServerClient();
-  if (!client) return;
-  try {
-    const { data: sysData, error } = await client
-      .from('system_config')
-      .select('*')
-      .eq('id', 1)
-      .maybeSingle();
-
-    if (sysData && !error) {
-      if (sysData.pin_code) config.ownerPin = String(sysData.pin_code).trim();
-      if (sysData.freellmapi_key) config.freellmApiKey = String(sysData.freellmapi_key).trim();
-      if (sysData.netlify_token) {
-        config.netlify.token = String(sysData.netlify_token).trim();
-        config.netlify.connected = true;
-      }
-      if (sysData.google_maps_api_key) config.googleMapsApiKey = String(sysData.google_maps_api_key).trim();
-      if (sysData.tavily_api_key) config.tavilyApiKey = String(sysData.tavily_api_key).trim();
-      if (sysData.hunter_api_key) config.hunterApiKey = String(sysData.hunter_api_key).trim();
-      if (sysData.prospeo_api_key) config.prospeoApiKey = String(sysData.prospeo_api_key).trim();
-      saveLocalSystemConfig();
-      addLog('SUPABASE', 'success', `[SUPABASE] Loaded system_config credentials successfully.`);
-    }
-  } catch (err: any) {
-    addLog('SUPABASE', 'info', `Supabase init probe: ${err.message}`);
-  }
+  // system_config is intentionally non-secret; Vault access is handled separately.
+  return;
 }
 
 loadStoredConfigFromSupabase();
 
-// 1-Hour Cron Watcher Tracker
+// 1-Hour Cron Watcher Tracker// 1-Hour Cron Watcher Tracker
 let lastCronRunAt = new Date(Date.now() - 3600000 * 0.3);
 let cronRunCount = 24;
 
@@ -1034,9 +578,7 @@ function executeReplyWatcher(triggerSource: 'scheduled' | 'manual' = 'scheduled'
   addLog('CRON', 'success', `1-Hour Reply Watcher complete. All ${gmailAccounts.length} inboxes synchronized.`);
 }
 
-setInterval(() => {
-  executeReplyWatcher('scheduled');
-}, 3600000);
+// Durable scheduling is disabled until an external scheduler and real Gmail integration are configured.
 
 // Helper to assemble active system prompt with personal training rules
 function buildEnrichedSystemPrompt(): string {
@@ -1052,71 +594,71 @@ function buildEnrichedSystemPrompt(): string {
 // API ROUTES: CORE SYSTEM & AUTH
 // ==========================================
 
-app.post('/api/auth/verify', (req, res) => {
-  const { pin } = req.body;
-  if (!pin) {
-    return res.status(400).json({ success: false, error: 'PIN required' });
+// Every API endpoint is protected by a signed, HttpOnly owner session.
+app.use('/api', (req, res, next) => {
+  if (req.path === '/auth/verify' || req.path === '/status') return next();
+  const raw = readCookie(req, 'irzam_session');
+  if (!raw) return res.status(401).json({ error: 'Owner session required.' });
+  const [expiresAt, signature] = raw.split('.');
+  const expires = Number(expiresAt);
+  if (!Number.isFinite(expires) || expires <= Date.now() || !signature) {
+    return res.status(401).json({ error: 'Owner session expired.' });
   }
-  const cleanPin = String(pin).trim();
-  const currentMasterPin = String(config.ownerPin).trim();
-  const isCorrect = cleanPin === currentMasterPin;
-
-  if (isCorrect) {
-    addLog('SYSTEM', 'success', 'Irzam Studio owner authenticated successfully.');
-    return res.json({ success: true, message: 'Access granted' });
+  try {
+    const expected = signOwnerSession(expiresAt);
+    const suppliedBuffer = Buffer.from(signature, 'hex');
+    const expectedBuffer = Buffer.from(expected, 'hex');
+    if (suppliedBuffer.length !== expectedBuffer.length || !timingSafeEqual(suppliedBuffer, expectedBuffer)) {
+      return res.status(401).json({ error: 'Invalid owner session.' });
+    }
+    return next();
+  } catch {
+    return res.status(503).json({ error: 'Owner session signing is not configured on this deployment.' });
   }
-
-  addLog('SYSTEM', 'warn', `Failed authentication attempt with unauthorized PIN.`);
-  return res.status(401).json({ success: false, error: 'Invalid PIN. Only the active established PIN is permitted.' });
 });
 
-app.post('/api/auth/change-pin', async (req, res) => {
-  const { currentPin, newPin } = req.body;
-  const cleanCurrent = String(currentPin || '').trim();
-  const currentMasterPin = String(config.ownerPin).trim();
-
-  if (cleanCurrent !== currentMasterPin) {
-    addLog('SYSTEM', 'warn', 'Rejected PIN change: current PIN verification failed.');
-    return res.status(401).json({ success: false, error: 'Current PIN is incorrect' });
+app.post('/api/auth/verify', async (req, res) => {
+  const suppliedPin = String(req.body?.pin || '').trim();
+  if (!suppliedPin) return res.status(400).json({ success: false, error: 'PIN required.' });
+  const ownerPin = process.env.OWNER_PIN || await getVaultSecret('irzam_owner_pin');
+  if (!ownerPin) return res.status(503).json({ success: false, error: 'Owner PIN is securely stored but server-side Supabase service-role access is not configured. Set SUPABASE_SERVICE_ROLE_KEY and SESSION_SECRET.' });
+  if (suppliedPin !== ownerPin) {
+    addLog('SYSTEM', 'warn', 'Rejected invalid owner PIN attempt.');
+    return res.status(401).json({ success: false, error: 'Invalid PIN.' });
   }
-
-  const cleanNew = String(newPin || '').trim();
-  if (!cleanNew || cleanNew.length < 4) {
-    return res.status(400).json({ success: false, error: 'New PIN must be at least 4 digits' });
+  if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) {
+    return res.status(503).json({ success: false, error: 'Set a random SESSION_SECRET of at least 32 characters before signing in.' });
   }
-
-  config.ownerPin = cleanNew;
-  await syncConfigToSupabase();
-  addLog('SYSTEM', 'success', 'Irzam Studio Master PIN updated in Supabase.');
-  return res.json({ success: true, message: 'PIN updated successfully.' });
+  const expiresAt = String(Date.now() + 8 * 60 * 60 * 1000);
+  const signature = signOwnerSession(expiresAt);
+  const cookieParts = [`irzam_session=${encodeURIComponent(`${expiresAt}.${signature}`)}`, 'HttpOnly', 'SameSite=Strict', 'Path=/', 'Max-Age=28800'];
+  if (process.env.NODE_ENV === 'production') cookieParts.push('Secure');
+  res.setHeader('Set-Cookie', cookieParts.join('; '));
+  addLog('SYSTEM', 'info', 'Owner authenticated with a signed server-side session.');
+  return res.json({ success: true, message: 'Access granted.' });
 });
 
-app.get('/api/status', (req, res) => {
-  const nextCronRunAt = new Date(lastCronRunAt.getTime() + config.replyWatcherIntervalMinutes * 60000);
+app.post('/api/auth/change-pin', (_req, res) => {
+  return res.status(501).json({ success: false, error: 'PIN changes are disabled until the Vault secret-management workflow is enabled.' });
+});
+
+app.get('/api/status', (_req, res) => {
   res.json({
     status: 'ok',
     appName: 'Irzam Studio',
-    version: '4.0.0',
+    version: '4.1.0-secure-foundation',
     config: {
       freellmBaseUrl: config.freellmBaseUrl,
       selectedModel: config.selectedModel,
-      hasFreellmKey: !!config.freellmApiKey,
+      hasFreellmKey: Boolean(process.env.FREELLM_API_KEY),
       temperature: config.temperature,
-      replyWatcherIntervalMinutes: config.replyWatcherIntervalMinutes,
-      autoDeployDemos: config.autoDeployDemos,
-      netlifyConnected: !!config.netlify.token,
-      googleOAuthConnected: !!config.googleOAuth.clientId,
-      supabaseConnected: !!(config.supabase.url && config.supabase.anonKey),
+      autoDeployDemos: false,
+      netlifyConnected: false,
+      googleOAuthConnected: false,
+      supabaseConnected: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
     },
-    cron: {
-      active: true,
-      interval: `${config.replyWatcherIntervalMinutes}m`,
-      lastRunAt: lastCronRunAt.toISOString(),
-      nextRunAt: nextCronRunAt.toISOString(),
-      runCount: cronRunCount,
-      unreadRepliesCount: detectedReplies.filter(r => r.status === 'unread').length
-    },
-    gmailAccountsCount: gmailAccounts.filter(g => g.connected).length,
+    cron: { active: false, interval: 'not scheduled', lastRunAt: null, nextRunAt: null, runCount: 0, unreadRepliesCount: 0 },
+    gmailAccountsCount: 0,
     activeDemosCount: hostedDemos.filter(d => d.status === 'active').length,
     leadsCount: trackedLeads.length,
     activeRulesCount: agentRules.filter(r => r.is_active).length,
@@ -1124,278 +666,73 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-app.get('/api/config', (req, res) => {
-  res.json({
-    ...config,
-    ownerPin: undefined,
-    ownerPinSet: true,
-    freellmApiKeyMasked: config.freellmApiKey ? `****${config.freellmApiKey.slice(-4)}` : '',
-    hasKey: !!config.freellmApiKey,
-    netlifyTokenMasked: config.netlify.token ? `****${config.netlify.token.slice(-4)}` : '',
-    googleClientSecretMasked: config.googleOAuth.clientSecret ? `****${config.googleOAuth.clientSecret.slice(-4)}` : '',
-    supabaseAnonKeyMasked: config.supabase.anonKey ? `****${config.supabase.anonKey.slice(-4)}` : '',
-    googleMapsApiKeyMasked: config.googleMapsApiKey ? `****${config.googleMapsApiKey.slice(-4)}` : '',
-    tavilyApiKeyMasked: config.tavilyApiKey ? `****${config.tavilyApiKey.slice(-4)}` : '',
-    hunterApiKeyMasked: config.hunterApiKey ? `****${config.hunterApiKey.slice(-4)}` : '',
-    prospeoApiKeyMasked: config.prospeoApiKey ? `****${config.prospeoApiKey.slice(-4)}` : '',
+app.get('/api/config', (_req, res) => {
+  return res.json({
+    ownerPin: '',
+    ownerPinSet: Boolean(process.env.OWNER_PIN),
+    freellmApiKey: '',
+    freellmApiKeyMasked: '',
+    hasKey: Boolean(process.env.FREELLM_API_KEY),
+    freellmBaseUrl: config.freellmBaseUrl,
+    selectedModel: config.selectedModel,
+    temperature: config.temperature,
+    systemPrompt: config.systemPrompt,
+    autoDeployDemos: false,
+    replyWatcherIntervalMinutes: config.replyWatcherIntervalMinutes,
+    soundAlerts: config.soundAlerts,
+    netlify: { token: '', siteId: config.netlify.siteId, siteName: config.netlify.siteName, connected: false },
+    googleOAuth: { clientId: '', clientSecret: '', connected: false, redirectUri: config.googleOAuth.redirectUri },
+    supabase: { url: config.supabase.url, anonKey: '', connected: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY) },
+    providerStatus: {
+      freellmApiKeyConfigured: Boolean(process.env.FREELLM_API_KEY),
+      googleMapsApiKeyConfigured: Boolean(process.env.GOOGLE_MAPS_API_KEY),
+      netlifyTokenConfigured: Boolean(process.env.NETLIFY_TOKEN),
+      gmailOAuthConfigured: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
+    },
   });
 });
 
-app.post('/api/config', (req, res) => {
-  const { 
-    freellmApiKey, 
-    freellmBaseUrl, 
-    selectedModel, 
-    temperature, 
-    systemPrompt, 
-    autoDeployDemos, 
-    replyWatcherIntervalMinutes, 
-    soundAlerts, 
-    ownerPin,
-    netlifyToken,
-    netlifySiteId,
-    netlifySiteName,
-    googleClientId,
-    googleClientSecret,
-    supabaseUrl,
-    supabaseAnonKey,
-    googleMapsApiKey,
-    tavilyApiKey,
-    hunterApiKey,
-    prospeoApiKey,
-  } = req.body;
-
-  if (freellmApiKey !== undefined && freellmApiKey !== '') config.freellmApiKey = freellmApiKey;
-  if (freellmBaseUrl) config.freellmBaseUrl = freellmBaseUrl;
-  if (selectedModel) config.selectedModel = selectedModel;
-  if (temperature !== undefined) config.temperature = Number(temperature);
-  if (systemPrompt !== undefined) config.systemPrompt = systemPrompt;
-  if (autoDeployDemos !== undefined) config.autoDeployDemos = Boolean(autoDeployDemos);
-  if (replyWatcherIntervalMinutes !== undefined) config.replyWatcherIntervalMinutes = Number(replyWatcherIntervalMinutes);
-  if (soundAlerts !== undefined) config.soundAlerts = Boolean(soundAlerts);
-  if (ownerPin !== undefined && String(ownerPin).trim().length >= 4) config.ownerPin = String(ownerPin).trim();
-
-  if (netlifyToken !== undefined) {
-    config.netlify.token = netlifyToken;
-    config.netlify.connected = Boolean(netlifyToken && netlifyToken.trim().length > 0);
-  }
-  if (netlifySiteId !== undefined) config.netlify.siteId = netlifySiteId;
-  if (netlifySiteName !== undefined) config.netlify.siteName = netlifySiteName;
-
-  if (googleClientId !== undefined) {
-    config.googleOAuth.clientId = googleClientId;
-    config.googleOAuth.connected = Boolean(googleClientId && googleClientId.trim().length > 0);
-  }
-  if (googleClientSecret !== undefined) config.googleOAuth.clientSecret = googleClientSecret;
-
-  if (supabaseUrl !== undefined) config.supabase.url = supabaseUrl;
-  if (supabaseAnonKey !== undefined) config.supabase.anonKey = supabaseAnonKey;
-  config.supabase.connected = Boolean(config.supabase.url && config.supabase.anonKey);
-
-  if (googleMapsApiKey !== undefined) config.googleMapsApiKey = googleMapsApiKey;
-  if (tavilyApiKey !== undefined) config.tavilyApiKey = tavilyApiKey;
-  if (hunterApiKey !== undefined) config.hunterApiKey = hunterApiKey;
-  if (prospeoApiKey !== undefined) config.prospeoApiKey = prospeoApiKey;
-
-  syncConfigToSupabase().catch(() => {});
-  addLog('SYSTEM', 'info', `Configuration updated and synchronized.`);
-  res.json({ success: true, message: 'Configuration saved successfully.' });
+app.post('/api/config', (_req, res) => {
+  return res.status(501).json({
+    success: false,
+    error: 'Credential updates are disabled in this endpoint. Add provider credentials only through the server-side Vault connector flow.',
+  });
 });
 
 app.get('/api/logs', (req, res) => {
   res.json({ logs: systemLogs });
 });
 
-app.post('/api/cron/trigger', (req, res) => {
-  executeReplyWatcher('manual');
-  res.json({
-    success: true,
-    message: `1-Hour Reply Watcher executed across all ${gmailAccounts.length} Gmail accounts.`,
-    lastRunAt: lastCronRunAt.toISOString()
-  });
+app.post('/api/cron/trigger', (_req, res) => {
+  return res.status(503).json({ success: false, error: 'No Gmail watcher is scheduled or running.' });
 });
 
 // ==========================================
 // BASE44 CONNECTORS MARKETPLACE ROUTES
 // ==========================================
 
-app.get('/api/connectors', (req, res) => {
-  // Update live statuses before returning
-  const updatedCatalog = connectorCatalog.map(c => {
-    if (c.id === 'freellmapi') {
-      c.status = config.freellmApiKey ? 'connected' : 'disconnected';
-      c.maskedKey = config.freellmApiKey ? `****${config.freellmApiKey.slice(-4)}` : undefined;
-    } else if (c.id === 'supabase') {
-      c.status = config.supabase.connected ? 'connected' : 'disconnected';
-      c.maskedKey = config.supabase.url ? `${config.supabase.url.replace(/^https?:\/\//, '').split('.')[0]}.supabase.co` : undefined;
-    } else if (c.id === 'google_workspace') {
-      c.status = gmailAccounts.some(g => g.connected) ? 'connected' : 'disconnected';
-      c.maskedKey = gmailAccounts[0]?.email || undefined;
-    } else if (c.id === 'netlify') {
-      c.status = config.netlify.connected ? 'connected' : 'disconnected';
-      c.maskedKey = config.netlify.token ? `****${config.netlify.token.slice(-4)}` : undefined;
-    } else if (c.id === 'google_places') {
-      c.status = config.googleMapsApiKey ? 'connected' : 'disconnected';
-      c.maskedKey = config.googleMapsApiKey ? `****${config.googleMapsApiKey.slice(-4)}` : undefined;
-    } else if (c.id === 'tavily') {
-      c.status = config.tavilyApiKey ? 'connected' : 'disconnected';
-      c.maskedKey = config.tavilyApiKey ? `****${config.tavilyApiKey.slice(-4)}` : undefined;
-    } else if (c.id === 'hunter') {
-      c.status = config.hunterApiKey ? 'connected' : 'disconnected';
-      c.maskedKey = config.hunterApiKey ? `****${config.hunterApiKey.slice(-4)}` : undefined;
-    } else if (c.id === 'prospeo') {
-      c.status = config.prospeoApiKey ? 'connected' : 'disconnected';
-      c.maskedKey = config.prospeoApiKey ? `****${config.prospeoApiKey.slice(-4)}` : undefined;
-    }
-    return c;
-  });
-
-  res.json({ connectors: updatedCatalog });
+app.get('/api/connectors', (_req, res) => {
+  const safeCatalog = connectorCatalog.map((item) => ({
+    ...item,
+    status: 'disconnected' as const,
+    maskedKey: undefined,
+    lastVerifiedAt: undefined,
+    usageInfo: undefined,
+    errorMessage: undefined,
+  }));
+  return res.json({ connectors: safeCatalog });
 });
 
-app.post('/api/connectors/:id', async (req, res) => {
-  const { id } = req.params;
-  const { credential, enabledForAgent, extra } = req.body;
-  const connector = connectorCatalog.find(c => c.id === id);
-  if (!connector) return res.status(404).json({ error: 'Connector not found' });
-
-  if (enabledForAgent !== undefined) {
-    connector.enabledForAgent = Boolean(enabledForAgent);
-  }
-
-  if (credential !== undefined) {
-    const cred = String(credential).trim();
-    if (id === 'freellmapi') {
-      config.freellmApiKey = cred;
-      connector.status = cred ? 'connected' : 'disconnected';
-      connector.maskedKey = cred ? `****${cred.slice(-4)}` : undefined;
-    } else if (id === 'netlify') {
-      config.netlify.token = cred;
-      config.netlify.connected = Boolean(cred);
-      connector.status = cred ? 'connected' : 'disconnected';
-      connector.maskedKey = cred ? `****${cred.slice(-4)}` : undefined;
-    } else if (id === 'google_places') {
-      config.googleMapsApiKey = cred;
-      connector.status = cred ? 'connected' : 'disconnected';
-      connector.maskedKey = cred ? `****${cred.slice(-4)}` : undefined;
-    } else if (id === 'tavily') {
-      config.tavilyApiKey = cred;
-      connector.status = cred ? 'connected' : 'disconnected';
-      connector.maskedKey = cred ? `****${cred.slice(-4)}` : undefined;
-    } else if (id === 'hunter') {
-      config.hunterApiKey = cred;
-      connector.status = cred ? 'connected' : 'disconnected';
-      connector.maskedKey = cred ? `****${cred.slice(-4)}` : undefined;
-    } else if (id === 'prospeo') {
-      config.prospeoApiKey = cred;
-      connector.status = cred ? 'connected' : 'disconnected';
-      connector.maskedKey = cred ? `****${cred.slice(-4)}` : undefined;
-    }
-    await syncConfigToSupabase();
-  }
-
-  connector.lastVerifiedAt = new Date().toISOString();
-  addLog('SYSTEM', 'success', `[CONNECTOR] Updated ${connector.name} settings.`);
-  res.json({ success: true, connector });
+app.post('/api/connectors/:id', (_req, res) => {
+  return res.status(503).json({
+    success: false,
+    error: 'Credential storage is disabled until the authenticated Vault connector workflow is deployed. No key was saved and no connector was marked connected.',
+  });
 });
 
 // Real Test Connection Probe for Each Connector
-app.post('/api/connectors/:id/test', async (req, res) => {
-  const { id } = req.params;
-  const connector = connectorCatalog.find(c => c.id === id);
-  if (!connector) return res.status(404).json({ error: 'Connector not found' });
-
-  const start = performance.now();
-  try {
-    if (id === 'freellmapi') {
-      if (!config.freellmApiKey) {
-        return res.status(400).json({ success: false, message: 'FreeLLMAPI key is not configured.' });
-      }
-      const response = await fetch(`${config.freellmBaseUrl}/models`, {
-        headers: { 'Authorization': `Bearer ${config.freellmApiKey}` }
-      }).catch(() => null);
-      const elapsed = Math.round(performance.now() - start);
-      connector.lastVerifiedAt = new Date().toISOString();
-      connector.status = 'connected';
-      return res.json({ success: true, message: `FreeLLMAPI online! Endpoint verified in ${elapsed}ms.`, latency: elapsed });
-    }
-
-    if (id === 'supabase') {
-      const sbClient = getSupabaseServerClient();
-      if (!sbClient) {
-        return res.status(400).json({ success: false, message: 'Supabase credentials missing.' });
-      }
-      const { error } = await sbClient.from('system_config').select('id', { head: true });
-      const elapsed = Math.round(performance.now() - start);
-      if (error && error.code !== 'PGRST116' && error.code !== '42P01') {
-        throw new Error(error.message);
-      }
-      connector.lastVerifiedAt = new Date().toISOString();
-      connector.status = 'connected';
-      return res.json({ success: true, message: `Supabase PostgreSQL DB connected in ${elapsed}ms!`, latency: elapsed });
-    }
-
-    if (id === 'google_workspace') {
-      const connectedCount = gmailAccounts.filter(g => g.connected).length;
-      if (connectedCount === 0) {
-        return res.status(400).json({ success: false, message: 'No authorized Gmail accounts linked.' });
-      }
-      connector.lastVerifiedAt = new Date().toISOString();
-      connector.status = 'connected';
-      return res.json({ success: true, message: `${connectedCount} Google Workspace Gmail account(s) authorized with offline refresh tokens.`, accountsCount: connectedCount });
-    }
-
-    if (id === 'netlify') {
-      if (!config.netlify.token) {
-        return res.status(400).json({ success: false, message: 'Netlify token not configured.' });
-      }
-      const netlifyRes = await fetch('https://api.netlify.com/api/v1/user', {
-        headers: { 'Authorization': `Bearer ${config.netlify.token}` }
-      }).catch(() => null);
-      if (netlifyRes && netlifyRes.ok) {
-        const u = await netlifyRes.json();
-        connector.lastVerifiedAt = new Date().toISOString();
-        connector.status = 'connected';
-        return res.json({ success: true, message: `Netlify API Verified for user: ${u.email || 'Active'}!` });
-      }
-      connector.status = 'connected';
-      return res.json({ success: true, message: `Netlify API connected to subdomain: ${config.netlify.siteName}.netlify.app` });
-    }
-
-    if (id === 'google_places') {
-      const elapsed = Math.round(performance.now() - start);
-      connector.lastVerifiedAt = new Date().toISOString();
-      connector.status = 'connected';
-      return res.json({ success: true, message: `Google Places API verified! Rating and userRatingCount search online (${elapsed}ms).`, latency: elapsed });
-    }
-
-    if (id === 'open_places' || id === 'you_mcp') {
-      const elapsed = Math.round(performance.now() - start);
-      connector.lastVerifiedAt = new Date().toISOString();
-      connector.status = 'connected';
-      return res.json({ success: true, message: `${connector.name} operational and ready for agent research (${elapsed}ms).`, latency: elapsed });
-    }
-
-    if (id === 'tavily') {
-      const elapsed = Math.round(performance.now() - start);
-      connector.lastVerifiedAt = new Date().toISOString();
-      connector.status = 'connected';
-      return res.json({ success: true, message: `Tavily Search API active! Deep web discovery enabled (${elapsed}ms).`, latency: elapsed });
-    }
-
-    if (id === 'hunter' || id === 'prospeo') {
-      const elapsed = Math.round(performance.now() - start);
-      connector.lastVerifiedAt = new Date().toISOString();
-      connector.status = 'connected';
-      return res.json({ success: true, message: `${connector.name} email discovery connector verified (${elapsed}ms).`, latency: elapsed });
-    }
-
-    return res.json({ success: true, message: `${connector.name} connection test passed.` });
-  } catch (err: any) {
-    connector.status = 'error';
-    connector.errorMessage = err.message;
-    return res.status(500).json({ success: false, message: `Connection test failed: ${err.message}` });
-  }
+app.post('/api/connectors/:id/test', (_req, res) => {
+  return res.status(503).json({ success: false, message: 'Provider connection tests are temporarily disabled until credentials can be loaded from Vault. No test success is assumed.' });
 });
 
 app.post('/api/connectors/:id/disconnect', async (req, res) => {
@@ -1619,7 +956,7 @@ app.post('/api/outreach/queue/schedule', (req, res) => {
     recipient_email: lead.email,
     subject: subject || `Interactive Prototype Demo for ${lead.business_name}`,
     body_preview: body ? body.slice(0, 120) : '',
-    attached_demo_url: attached_demo_url || lead.demo_url || 'https://apex-portfolio.netlify.app',
+    attached_demo_url: attached_demo_url || lead.demo_url || null,
     scheduled_for_pkt: scheduled_for_pkt || new Date(Date.now() + 3600000).toISOString(),
     status: 'scheduled',
     followup_stage: 0,
@@ -1631,28 +968,8 @@ app.post('/api/outreach/queue/schedule', (req, res) => {
   res.json({ success: true, queueItem: newItem });
 });
 
-app.post('/api/outreach/queue/dispatch-due', (req, res) => {
-  const scheduledItems = outreachQueue.filter(q => q.status === 'scheduled');
-  const connectedGmail = gmailAccounts.find(g => g.connected) || gmailAccounts[0];
-  let dispatched = 0;
-
-  scheduledItems.forEach(item => {
-    item.status = 'sent';
-    item.sent_via_email = connectedGmail.email;
-    item.sent_at = new Date().toISOString();
-    item.next_followup_due = new Date(Date.now() + 3600000 * 24 * 3).toISOString(); // 3 days follow-up
-    dispatched++;
-
-    const matchingLead = trackedLeads.find(l => l.id === item.lead_id);
-    if (matchingLead) {
-      matchingLead.status = 'contacted';
-      matchingLead.last_contacted_at = new Date().toISOString();
-    }
-  });
-
-  connectedGmail.sentToday += dispatched;
-  addLog('OUTREACH', 'success', `[OUTREACH QUEUE] Dispatched ${dispatched} due email(s) from ${connectedGmail.email}.`);
-  res.json({ success: true, count: dispatched, message: `Dispatched ${dispatched} queue slots.` });
+app.post('/api/outreach/queue/dispatch-due', (_req, res) => {
+  return res.status(503).json({ success: false, count: 0, error: 'Gmail OAuth and the durable sending worker are not configured. No email was sent.' });
 });
 
 app.post('/api/outreach/queue/:id/cancel', (req, res) => {
@@ -1666,31 +983,8 @@ app.post('/api/outreach/queue/:id/cancel', (req, res) => {
 });
 
 // Follow-Up Engine Check (Phase 13)
-app.post('/api/outreach/followups/check', (req, res) => {
-  const sentItems = outreachQueue.filter(q => q.status === 'sent');
-  let followupsQueued = 0;
-
-  sentItems.forEach(item => {
-    // Check if client replied
-    const hasReplied = detectedReplies.some(r => r.fromEmail.toLowerCase() === item.recipient_email.toLowerCase());
-    if (hasReplied) {
-      item.status = 'replied';
-      return;
-    }
-
-    if (item.followup_stage === 0) {
-      item.followup_stage = 1;
-      item.next_followup_due = new Date(Date.now() + 3600000 * 24 * 3).toISOString();
-      followupsQueued++;
-    } else if (item.followup_stage === 1) {
-      item.followup_stage = 2;
-      item.next_followup_due = undefined;
-      followupsQueued++;
-    }
-  });
-
-  addLog('OUTREACH', 'info', `[FOLLOW-UPS] Checked active queue. ${followupsQueued} follow-up stages queued.`);
-  res.json({ success: true, followupsQueued });
+app.post('/api/outreach/followups/check', (_req, res) => {
+  return res.status(503).json({ success: false, followupsQueued: 0, error: 'Follow-up processing is disabled until Gmail inbox matching and the durable queue are connected.' });
 });
 
 // ==========================================
@@ -1698,116 +992,46 @@ app.post('/api/outreach/followups/check', (req, res) => {
 // ==========================================
 
 app.post('/api/research/search-places', async (req, res) => {
-  const { niche, city, minReviews = 50 } = req.body;
-  const targetNiche = niche || 'Institutional Fintech';
-  const targetCity = city || 'New York, NY';
-
-  addLog('RESEARCH', 'info', `Searching Google Places (New) for "${targetNiche}" in "${targetCity}" (minReviews: ${minReviews})...`);
-
-  // Sample curated candidate results following real Google Places API response structure
-  const candidates: Array<{
-    name: string;
-    place_id: string;
-    address: string;
-    rating: number;
-    userRatingCount: number;
-    website: string;
-    phone: string;
-    qualified: boolean;
-  }> = [
-    {
-      name: `${targetCity.split(',')[0]} Prime ${targetNiche.split(' ')[0]} Partners`,
-      place_id: `ChIJ${Math.random().toString(36).substring(2, 10)}`,
-      address: `100 Financial Way, ${targetCity}`,
-      rating: 4.9,
-      userRatingCount: 88,
-      website: `https://${targetCity.split(',')[0].toLowerCase()}-prime.com`,
-      phone: '+1 (555) 234-5678',
-      qualified: 88 >= minReviews,
-    },
-    {
-      name: `Vanguard ${targetNiche} Group`,
-      place_id: `ChIJ${Math.random().toString(36).substring(2, 10)}`,
-      address: `450 Lexington Ave, ${targetCity}`,
-      rating: 4.8,
-      userRatingCount: 114,
-      website: `https://vanguard-${targetNiche.toLowerCase().replace(/[^a-z0-9]/g, '')}.io`,
-      phone: '+1 (555) 876-5432',
-      qualified: 114 >= minReviews,
-    },
-    {
-      name: `Solaria ${targetNiche} Labs`,
-      place_id: `ChIJ${Math.random().toString(36).substring(2, 10)}`,
-      address: `12 Innovation Blvd, ${targetCity}`,
-      rating: 4.2,
-      userRatingCount: 32,
-      website: `https://solaria-labs.com`,
-      phone: '+1 (555) 345-6789',
-      qualified: 32 >= minReviews, // Fails min reviews qualification
-    }
-  ];
-
-  res.json({ success: true, results: candidates, count: candidates.length });
+  const niche = String(req.body?.niche || '').trim();
+  const city = String(req.body?.city || '').trim();
+  const minReviews = Math.max(0, Number(req.body?.minReviews ?? 50));
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) return res.status(503).json({ success: false, error: 'Google Places API key is not configured. No sample businesses are returned.' });
+  if (!niche || !city) return res.status(400).json({ success: false, error: 'Both niche and city are required.' });
+  try {
+    const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.websiteUri,places.nationalPhoneNumber',
+      },
+      body: JSON.stringify({ textQuery: `${niche} in ${city}`, pageSize: 20 }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!response.ok) throw new Error(`Google Places returned HTTP ${response.status}: ${(await response.text()).slice(0, 400)}`);
+    const payload = await response.json() as any;
+    const results = (payload.places || []).map((place: any) => ({
+      name: place.displayName?.text || '',
+      place_id: place.id || '',
+      address: place.formattedAddress || '',
+      rating: typeof place.rating === 'number' ? place.rating : null,
+      userRatingCount: typeof place.userRatingCount === 'number' ? place.userRatingCount : 0,
+      website: place.websiteUri || '',
+      phone: place.nationalPhoneNumber || '',
+    })).filter((place: any) => place.name && place.place_id && place.website && place.userRatingCount >= minReviews);
+    return res.json({ success: true, results, count: results.length, source: 'Google Places API (New)' });
+  } catch (error: any) {
+    addLog('RESEARCH', 'error', `Google Places search failed: ${error.message}`);
+    return res.status(502).json({ success: false, error: error.message });
+  }
 });
 
-// 5 PM PKT Autonomous Discovery Pipeline
-app.post('/api/research/run-pipeline', (req, res) => {
-  const targetNiche = req.body.niche || 'Institutional Fintech';
-  const targetCity = req.body.city || 'Chicago, IL';
-
-  addLog('AGENT', 'info', `[5:00 PM PKT DISCOVERY] Running autonomous discovery for ${targetNiche} in ${targetCity}...`);
-
-  const newProspect: Lead = {
-    id: `lead-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-    business_name: `Atlas ${targetNiche} Corp`,
-    email: `contact@atlas-${targetNiche.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`,
-    phone: '+1 (312) 555-9081',
-    city: targetCity,
-    niche: targetNiche,
-    status: 'pending',
-    notes: 'Qualified via Google Places (76 reviews, 4.9 rating). Discovered via 5 PM PKT autonomous pipeline.',
-    demo_url: hostedDemos[0]?.liveNetlifyUrl || '/demo/demo-apex-wealth',
-    google_rating: 4.9,
-    google_reviews_count: 76,
-    website: `https://atlas-${targetNiche.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`,
-    email_source: 'official_website',
-    email_verified: true,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-
-  trackedLeads.unshift(newProspect);
-
-  // Auto-schedule in outreach queue for 6 PM PKT slot
-  const newQueueItem: OutreachQueueItem = {
-    id: `queue-${Date.now()}`,
-    lead_id: newProspect.id,
-    business_name: newProspect.business_name,
-    recipient_email: newProspect.email,
-    subject: `Tailored Digital Prototype for ${newProspect.business_name}`,
-    body_preview: `Hi ${newProspect.business_name} Team, we reviewed your presence in ${targetCity} and deployed an interactive prototype...`,
-    attached_demo_url: newProspect.demo_url,
-    scheduled_for_pkt: new Date(Date.now() + 3600000).toISOString(),
-    status: 'scheduled',
-    followup_stage: 0,
-    created_at: new Date().toISOString(),
-  };
-  outreachQueue.unshift(newQueueItem);
-
-  // Record workflow run
-  const run: WorkflowRun = {
-    id: `wf-${Date.now()}`,
-    workflow_type: 'discovery_5pm',
-    status: 'completed',
-    started_at: new Date().toISOString(),
-    completed_at: new Date().toISOString(),
-    items_processed: 1,
-    summary: `Identified and qualified ${newProspect.business_name} (76 Google reviews). Queued for 6 PM outreach.`,
-  };
-  workflowRuns.unshift(run);
-
-  addLog('AGENT', 'success', `[5 PM DISCOVERY COMPLETE] Added & qualified ${newProspect.business_name}. Queued in outreach.`);
-  res.json({ success: true, lead: newProspect, queueItem: newQueueItem });
+app.post('/api/research/run-pipeline', (_req, res) => {
+  return res.status(503).json({
+    success: false,
+    error: 'The full discovery pipeline is not enabled yet. Verified contact sourcing, durable lead storage, and suppression checks must be connected before a candidate can be queued.',
+  });
 });
 
 // ==========================================
@@ -1818,9 +1042,8 @@ app.get('/api/inbox/replies', (req, res) => {
   res.json({ replies: detectedReplies });
 });
 
-app.post('/api/inbox/scan', (req, res) => {
-  executeReplyWatcher('manual');
-  res.json({ success: true, replies: detectedReplies, message: 'All connected Gmail inboxes scanned.' });
+app.post('/api/inbox/scan', (_req, res) => {
+  return res.status(503).json({ success: false, replies: [], error: 'Real Gmail OAuth is not configured. No inbox was scanned.' });
 });
 
 app.post('/api/inbox/replies/:id/generate-response', async (req, res) => {
@@ -1843,15 +1066,8 @@ app.post('/api/inbox/replies/:id/generate-response', async (req, res) => {
   res.json({ success: true, suggestedResponse: responseText });
 });
 
-app.post('/api/inbox/replies/:id/send-response', (req, res) => {
-  const { id } = req.params;
-  const { responseText } = req.body;
-  const reply = detectedReplies.find(r => r.id === id);
-  if (!reply) return res.status(404).json({ error: 'Reply not found' });
-
-  reply.status = 'replied';
-  addLog('GMAIL', 'success', `[GMAIL API] Dispatched follow-up reply to ${reply.fromEmail}: "${reply.subject}"`);
-  res.json({ success: true, message: `Response dispatched to ${reply.fromEmail}` });
+app.post('/api/inbox/replies/:id/send-response', (_req, res) => {
+  return res.status(503).json({ success: false, error: 'Gmail OAuth is not configured. No reply was sent.' });
 });
 
 // ==========================================
@@ -1862,66 +1078,11 @@ app.get('/api/reports', (req, res) => {
   res.json({ reports: dailyReports });
 });
 
-app.post('/api/reports/generate', (req, res) => {
-  const todayStr = new Date().toISOString().split('T')[0];
-  const totalResearched = trackedLeads.length * 2;
-  const totalQualified = trackedLeads.length;
-  const totalSent = outreachQueue.filter(q => q.status === 'sent').length;
-  const totalScheduled = outreachQueue.filter(q => q.status === 'scheduled').length;
-  const totalReplies = detectedReplies.length;
-
-  const newReport: DailyReport = {
-    id: `rep-${todayStr}-${Date.now()}`,
-    report_date: todayStr,
-    generated_at_pkt: new Date().toISOString(),
-    researched_count: totalResearched,
-    qualified_count: totalQualified,
-    google_reviews_checked: totalResearched,
-    emails_discovered: totalQualified,
-    emails_verified: totalQualified,
-    emails_scheduled: totalScheduled,
-    emails_sent: totalSent,
-    failed_attempts: 0,
-    replies_received: totalReplies,
-    responses_generated: totalReplies,
-    followups_sent: 2,
-    demos_generated: hostedDemos.length,
-    quota_usage_summary: {
-      google_places_calls: totalResearched,
-      tavily_searches: 18,
-      hunter_verifications: totalQualified,
-      gmail_daily_dispatched: gmailAccounts.reduce((acc, g) => acc + g.sentToday, 0)
-    },
-    summary_text: `10 PM PKT Autonomous Daily Report compiled. ${totalQualified} leads qualified with >= 50 Google reviews. ${totalSent} emails sent. ${totalReplies} client replies monitored.`,
-    status: 'saved',
-  };
-
-  dailyReports.unshift(newReport);
-
-  const wfRun: WorkflowRun = {
-    id: `wf-${Date.now()}`,
-    workflow_type: 'daily_report_10pm',
-    status: 'completed',
-    started_at: new Date().toISOString(),
-    completed_at: new Date().toISOString(),
-    items_processed: totalQualified,
-    summary: '10 PM PKT Daily Summary Report compiled and archived in Supabase.',
-  };
-  workflowRuns.unshift(wfRun);
-
-  addLog('SYSTEM', 'success', `[10 PM REPORT] Compiled daily summary report for ${todayStr}.`);
-  res.json({ success: true, report: newReport });
+app.post('/api/reports/generate', (_req, res) => {
+  return res.status(503).json({ success: false, error: 'Daily reporting is disabled until the real workflow metrics are persisted.' });
 });
-
-app.post('/api/reports/:id/send', (req, res) => {
-  const { id } = req.params;
-  const report = dailyReports.find(r => r.id === id);
-  if (!report) return res.status(404).json({ error: 'Report not found' });
-
-  const primaryGmail = gmailAccounts.find(g => g.isPrimary) || gmailAccounts[0];
-  report.status = 'sent_to_email';
-  addLog('GMAIL', 'success', `[10 PM REPORT] Dispatched daily summary email to operator via ${primaryGmail.email}.`);
-  res.json({ success: true, message: `Report sent from ${primaryGmail.email}` });
+app.post('/api/reports/:id/send', (_req, res) => {
+  return res.status(503).json({ success: false, error: 'Gmail is not configured. No report was sent.' });
 });
 
 // ==========================================
@@ -1932,243 +1093,20 @@ app.get('/api/automation/history', (req, res) => {
   res.json({ runs: workflowRuns });
 });
 
-app.post('/api/automation/trigger/:workflow', (req, res) => {
-  const { workflow } = req.params;
-  const runId = `wf-${Date.now()}`;
-
-  let summary = '';
-  if (workflow === 'discovery_5pm') {
-    summary = 'Triggered 5 PM PKT Autonomous Discovery across Google Places & Open Places.';
-  } else if (workflow === 'outreach_6pm') {
-    summary = 'Triggered 6 PM PKT Personalized Batch Dispatch across connected Gmail accounts.';
-  } else if (workflow === 'inbox_watcher_hourly') {
-    executeReplyWatcher('manual');
-    summary = 'Triggered Hourly Gmail Inbox Watcher across authorized OAuth tokens.';
-  } else if (workflow === 'daily_report_10pm') {
-    summary = 'Triggered 10 PM PKT Daily Intelligence Report generation.';
-  } else {
-    summary = `Triggered workflow: ${workflow}`;
-  }
-
-  const run: WorkflowRun = {
-    id: runId,
-    workflow_type: workflow as any,
-    status: 'completed',
-    started_at: new Date().toISOString(),
-    completed_at: new Date().toISOString(),
-    items_processed: 5,
-    summary,
-  };
-  workflowRuns.unshift(run);
-
-  addLog('CRON', 'success', `[AUTOMATION] ${summary}`);
-  res.json({ success: true, run });
+app.post('/api/automation/trigger/:workflow', (_req, res) => {
+  return res.status(503).json({ success: false, error: 'Durable scheduled workflows are not deployed yet. No workflow was run.' });
 });
 
 // ==========================================
 // GOOGLE OAUTH & GMAIL INTEGRATION (Phase 7 & 14)
 // ==========================================
 
-app.get('/api/gmail/oauth/auth-url', (req, res) => {
-  const { redirectOrigin } = req.query;
-  const clientId = config.googleOAuth.clientId || 'YOUR_GOOGLE_CLIENT_ID';
-  const redirectUri = redirectOrigin ? `${redirectOrigin}/oauth/callback` : (config.googleOAuth.redirectUri || 'http://localhost:3000/oauth/callback');
-  const scopes = [
-    'https://mail.google.com/',
-    'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/userinfo.profile'
-  ].join(' ');
-
-  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scopes)}&access_type=offline&prompt=consent`;
-  
-  res.json({
-    authUrl,
-    clientIdConfigured: Boolean(config.googleOAuth.clientId),
-    redirectUri,
-  });
+app.get('/api/gmail/oauth/auth-url', (_req, res) => {
+  return res.status(503).json({ success: false, error: 'Real Gmail OAuth is not enabled. No simulated authorization URL is returned.' });
 });
-
-const handleOAuthCallbackGet = async (req: express.Request, res: express.Response) => {
-  const code = (req.query.code as string) || '';
-  const error = (req.query.error as string) || '';
-
-  if (error || !code) {
-    const errorMsg = error || 'No authorization code returned from Google consent screen.';
-    addLog('GMAIL', 'warn', `OAuth popup cancelled or returned error: ${errorMsg}`);
-    return res.status(200).send(`
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <title>Google OAuth - Irzam Studio</title>
-        <style>
-          body { background: #0a0a0c; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-          .box { background: #121218; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 32px; text-align: center; max-width: 400px; box-shadow: 0 20px 40px rgba(0,0,0,0.8); }
-          h2 { margin: 0 0 10px; font-size: 18px; color: #f87171; }
-          p { color: #a1a1aa; font-size: 13px; margin: 0 0 16px; }
-        </style>
-      </head>
-      <body>
-        <div class="box">
-          <h2>Authorization Cancelled</h2>
-          <p>${errorMsg}</p>
-          <p style="font-size: 11px; color: #71717a;">Closing popup window...</p>
-        </div>
-        <script>
-          try {
-            if (window.opener) {
-              window.opener.postMessage({
-                type: 'GOOGLE_OAUTH_ERROR',
-                error: ${JSON.stringify(errorMsg)}
-              }, '*');
-            }
-          } catch (e) {
-            console.error(e);
-          }
-          setTimeout(function() { window.close(); }, 1200);
-        </script>
-      </body>
-      </html>
-    `);
-  }
-
-  addLog('GMAIL', 'info', `OAuth authorization code received in callback. Linking Google Workspace account...`);
-
-  let refreshToken = `refresh_token_${Date.now()}`;
-  let accessToken = `access_token_${Date.now()}`;
-  let userEmail = `operative.${Math.random().toString(36).substring(2, 6)}@gmail.com`;
-  let userName = 'Google Workspace Operative';
-
-  try {
-    if (config.googleOAuth.clientId && config.googleOAuth.clientSecret) {
-      const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-      const host = req.get('host') || 'localhost:3000';
-      const currentRedirectUri = `${protocol}://${host}${req.path}`;
-
-      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          code: String(code),
-          client_id: config.googleOAuth.clientId,
-          client_secret: config.googleOAuth.clientSecret,
-          redirect_uri: currentRedirectUri,
-          grant_type: 'authorization_code'
-        }).toString()
-      });
-
-      if (tokenResponse.ok) {
-        const tokenData: any = await tokenResponse.json();
-        accessToken = tokenData.access_token || accessToken;
-        refreshToken = tokenData.refresh_token || refreshToken;
-
-        const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-          headers: { 'Authorization': `Bearer ${accessToken}` }
-        });
-        if (userRes.ok) {
-          const userProfile: any = await userRes.json();
-          userEmail = userProfile.email || userEmail;
-          userName = userProfile.name || userName;
-        }
-      }
-    }
-  } catch (err: any) {
-    addLog('GMAIL', 'warn', `Token exchange note: ${err.message}`);
-  }
-
-  const finalEmail = userEmail;
-  const accountId = `gmail-${Date.now()}`;
-  const newAccount: GmailAccount = {
-    id: accountId,
-    email: finalEmail,
-    label: `${userName} (${finalEmail.split('@')[0]})`,
-    connected: true,
-    connectedAt: new Date().toISOString(),
-    dailySendQuota: 500,
-    sentToday: 0,
-    inboxUnreadCount: 0,
-    replyWatcherActive: true,
-    lastSyncAt: new Date().toISOString(),
-    hasRefreshToken: true,
-    refreshToken,
-    tokenScope: 'https://mail.google.com/',
-    isPrimary: gmailAccounts.length === 0,
-  };
-
-  gmailAccounts.unshift(newAccount);
-  addLog('GMAIL', 'success', `[OAUTH SUCCESS] ${finalEmail} linked with https://mail.google.com/ scope and Refresh Token.`);
-
-  return res.status(200).send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <title>Connecting Gmail - Irzam Studio</title>
-      <style>
-        body { background: #0a0a0c; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; }
-        .box { background: #121218; border: 1px solid rgba(255,255,255,0.12); border-radius: 20px; padding: 36px 32px; max-width: 440px; box-shadow: 0 25px 50px rgba(0,0,0,0.8); }
-        .spinner { width: 36px; height: 36px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 20px; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        h2 { margin: 0 0 10px; font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
-        p { color: #a1a1aa; font-size: 13px; margin: 0; }
-        .email { color: #38bdf8; font-weight: 600; }
-      </style>
-    </head>
-    <body>
-      <div class="box">
-        <div class="spinner"></div>
-        <h2>Account Connected!</h2>
-        <p>Linking <span class="email">${finalEmail}</span> to Irzam Studio...</p>
-        <p style="font-size: 11px; color: #71717a; margin-top: 14px;">Closing window and updating dashboard...</p>
-      </div>
-      <script>
-        try {
-          if (window.opener) {
-            window.opener.postMessage({
-              type: 'GOOGLE_OAUTH_SUCCESS',
-              refreshToken: ${JSON.stringify(refreshToken)},
-              accessToken: ${JSON.stringify(accessToken)},
-              email: ${JSON.stringify(finalEmail)},
-              accountId: ${JSON.stringify(accountId)}
-            }, '*');
-          }
-        } catch (e) {
-          console.error('postMessage error:', e);
-        }
-        setTimeout(function() {
-          window.close();
-        }, 500);
-      </script>
-    </body>
-    </html>
-  `);
-};
-
-app.get('/oauth/callback', handleOAuthCallbackGet);
-app.get('/oauth2callback', handleOAuthCallbackGet);
-
-app.post('/api/gmail/oauth/callback', async (req, res) => {
-  const { simulatedEmail } = req.body;
-  const email = simulatedEmail || `operative.${Math.random().toString(36).substring(2, 6)}@gmail.com`;
-  const newAccount: GmailAccount = {
-    id: `gmail-${Date.now()}`,
-    email,
-    label: `Google Workspace (${email.split('@')[0]})`,
-    connected: true,
-    connectedAt: new Date().toISOString(),
-    dailySendQuota: 500,
-    sentToday: 0,
-    inboxUnreadCount: 0,
-    replyWatcherActive: true,
-    lastSyncAt: new Date().toISOString(),
-    hasRefreshToken: true,
-    tokenScope: 'https://mail.google.com/',
-    isPrimary: gmailAccounts.length === 0,
-  };
-  gmailAccounts.unshift(newAccount);
-  addLog('GMAIL', 'success', `[ACCOUNT AUTHORIZED] Google Workspace account ${email} authorized.`);
-  res.json({ success: true, account: newAccount, message: `Google account ${email} connected.` });
-});
+app.get('/oauth/callback', (_req, res) => res.status(503).send('Gmail OAuth is not configured.'));
+app.get('/oauth2callback', (_req, res) => res.status(503).send('Gmail OAuth is not configured.'));
+app.post('/api/gmail/oauth/callback', (_req, res) => res.status(503).json({ success: false, error: 'Simulated OAuth callback disabled.' }));
 
 app.get('/api/gmail/accounts', (req, res) => {
   res.json({
@@ -2196,21 +1134,8 @@ app.post('/api/gmail/accounts/:id/toggle', (req, res) => {
   res.json({ success: true, account: acc });
 });
 
-app.post('/api/gmail/send', (req, res) => {
-  const { accountId, toEmail, subject, body } = req.body;
-  const acc = gmailAccounts.find(a => a.id === accountId) || gmailAccounts[0];
-  if (!toEmail || !subject || !body) {
-    return res.status(400).json({ error: 'toEmail, subject, and body are required' });
-  }
-  acc.sentToday += 1;
-  addLog('GMAIL', 'success', `[GMAIL API DISPATCH] Email sent from ${acc.email} to ${toEmail}: "${subject}".`);
-  res.json({
-    success: true,
-    messageId: `msg_${Date.now()}`,
-    sentFrom: acc.email,
-    sentTo: toEmail,
-    sentAt: new Date().toISOString()
-  });
+app.post('/api/gmail/send', (_req, res) => {
+  return res.status(503).json({ success: false, error: 'Gmail sending is not configured. No email was sent.' });
 });
 
 // ==========================================
@@ -2221,42 +1146,8 @@ app.get('/api/demos', (req, res) => {
   res.json({ demos: hostedDemos });
 });
 
-app.post('/api/demos', (req, res) => {
-  const { title, clientName, htmlContent, framework = 'Tailwind + HTML5' } = req.body;
-  if (!title || !htmlContent) {
-    return res.status(400).json({ error: 'title and htmlContent are required' });
-  }
-
-  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || `demo-${Date.now()}`;
-  const id = `demo-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-  const deployTarget = config.netlify.connected ? 'netlify' : 'edge_sandbox';
-  const liveNetlifyUrl = config.netlify.connected
-    ? `https://${slug}-${Math.random().toString(36).substring(2, 6)}.netlify.app`
-    : undefined;
-
-  const newDemo: HostedDemo = {
-    id,
-    slug,
-    title,
-    clientName: clientName || 'Prospect Client',
-    createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 48 * 3600000).toISOString(),
-    framework,
-    status: 'active',
-    views: 1,
-    htmlContent,
-    previewUrl: `/demo/${id}`,
-    deployTarget,
-    liveNetlifyUrl,
-  };
-
-  hostedDemos.unshift(newDemo);
-  addLog('HOSTING', 'success', `[DEPLOYED] Demo "${title}" deployed. URL: ${newDemo.liveNetlifyUrl || newDemo.previewUrl}`);
-  res.json({
-    success: true,
-    demo: newDemo,
-    liveUrl: newDemo.liveNetlifyUrl || newDemo.previewUrl
-  });
+app.post('/api/demos', (_req, res) => {
+  return res.status(503).json({ success: false, error: 'Live demo deployment is disabled until a real Netlify API token and site ID are configured. No placeholder URL was created.' });
 });
 
 app.delete('/api/demos/:id', (req, res) => {
@@ -2296,32 +1187,22 @@ app.get('/api/leads', (req, res) => {
 });
 
 app.post('/api/leads', (req, res) => {
-  const { business_name, email, phone, city, niche, notes, demo_url } = req.body;
-  if (!business_name || !email) {
-    return res.status(400).json({ error: 'business_name and email are required' });
-  }
-
-  const newLead: Lead = {
-    id: `lead-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-    business_name: business_name.trim(),
-    email: email.trim().toLowerCase(),
-    phone: phone ? phone.trim() : undefined,
-    city: city ? city.trim() : 'Undisclosed',
-    niche: niche ? niche.trim() : 'Technology',
-    status: 'pending',
-    notes: notes ? notes.trim() : undefined,
-    demo_url: demo_url ? demo_url.trim() : undefined,
-    google_rating: 4.8,
-    google_reviews_count: 65,
-    email_source: 'manual_entry',
-    email_verified: true,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+  const { business_name, email, phone, city, niche, notes, demo_url } = req.body || {};
+  if (!business_name || !email) return res.status(400).json({ error: 'Business name and email are required.' });
+  const normalizedEmail = String(email).trim().toLowerCase();
+  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(normalizedEmail)) return res.status(400).json({ error: 'Enter a valid email address.' });
+  const now = new Date().toISOString();
+  const lead: Lead = {
+    id: randomUUID(), business_name: String(business_name).trim(), email: normalizedEmail,
+    phone: phone ? String(phone).trim() : undefined, city: city ? String(city).trim() : 'Undisclosed',
+    niche: niche ? String(niche).trim() : 'Unclassified', status: 'pending',
+    notes: notes ? String(notes).trim() : undefined, demo_url: demo_url ? String(demo_url).trim() : undefined,
+    email_source: 'manual_entry', email_verified: false, google_reviews_count: 0,
+    created_at: now, updated_at: now,
   };
-
-  trackedLeads.unshift(newLead);
-  addLog('SYSTEM', 'success', `Added new prospective lead: ${newLead.business_name} (${newLead.email})`);
-  res.json({ success: true, lead: newLead });
+  trackedLeads.unshift(lead);
+  addLog('SYSTEM', 'info', `Manually entered lead ${lead.business_name}; review count and email verification remain unverified.`);
+  return res.json({ success: true, lead });
 });
 
 app.patch('/api/leads/:id', (req, res) => {
@@ -2347,22 +1228,8 @@ app.delete('/api/leads/:id', (req, res) => {
   res.status(404).json({ error: 'Lead not found' });
 });
 
-app.post('/api/leads/:id/dispatch', (req, res) => {
-  const { id } = req.params;
-  const lead = trackedLeads.find(l => l.id === id);
-  if (!lead) return res.status(404).json({ error: 'Lead not found' });
-
-  const connectedGmail = gmailAccounts.find(g => g.connected) || gmailAccounts[0];
-  const demoToAttach = lead.demo_url || (hostedDemos[0]?.liveNetlifyUrl || hostedDemos[0]?.previewUrl) || 'https://apex-portfolio.netlify.app';
-
-  lead.status = 'contacted';
-  lead.last_contacted_at = new Date().toISOString();
-  lead.updated_at = new Date().toISOString();
-  if (!lead.demo_url) lead.demo_url = demoToAttach;
-  connectedGmail.sentToday += 1;
-
-  addLog('GMAIL', 'success', `[OUTREACH DISPATCH] Personalized email dispatched to ${lead.business_name} (${lead.email}) from ${connectedGmail.email}.`);
-  res.json({ success: true, lead, message: `Email outreach dispatched to ${lead.business_name}` });
+app.post('/api/leads/:id/dispatch', (_req, res) => {
+  return res.status(503).json({ success: false, error: 'Outreach dispatch is disabled until verified contact provenance and real Gmail sending are connected. No email was sent.' });
 });
 
 // Fast-path helper for small-talk
@@ -2370,19 +1237,26 @@ function isLightInteraction(message: string, attachmentsCount: number): string |
   if (attachmentsCount > 0) return null;
   const text = (message || '').trim().toLowerCase();
   if (text.length > 70) return null;
+  if (/^(hi|hello|hey|yo|greetings|hola|good\\s*(morning|afternoon|evening|day)|sup)\\b[!.?]*$/i.test(text)) {
+    return `### Irzam Studio Workspace Ready
 
-  if (/^(hi|hello|hey|yo|greetings|hola|good\s*(morning|afternoon|evening|day)|sup)\b[!.?]*$/i.test(text)) {
-    return `### Irzam Studio Intelligence Standing By\n\nAll neural pipelines, Base44 connector marketplace, connected Google Workspace relays, and client demo engines are operational. Ready for assignment. What is our objective?`;
+The dashboard is available. AI, research, email and deployment providers must pass real connection checks before they can be used. What would you like to prepare?`;
   }
+  if (/^(who\\s*are\\s*you|what\\s*can\\s*you\\s*do|what\\s*is\\s*irzam\\s*studio|help)\\b[!.?]*$/i.test(text)) {
+    return `### Irzam Studio
 
-  if (/^(who\s*are\s*you|what\s*can\s*you\s*do|what\s*is\s*irzam\s*studio|help)\b[!.?]*$/i.test(text)) {
-    return `### Irzam Studio Autonomous Agent Dossier\n\n- **Qwen Neural Brain**: Multimodal reasoning, full-stack site coding, and cold outreach drafting.\n- **Base44 Connectors Marketplace**: Centralized access for Google Places, Tavily, Hunter, Supabase, Netlify, and Gmail.\n- **5 PM & 6 PM PKT Outreach Engine**: Autonomous prospective lead discovery and scheduled batch dispatch.\n- **Personal Training Memory**: Learns your qualification rules, tone, and campaign preferences permanently.\n- **Live Client Demo Hosting**: Instant Netlify edge deployments of custom Tailwind prototypes.\n\nIssue an instruction or attach a dossier to begin.`;
+A workspace for verified prospect research, contact discovery, personalized outreach, inbox handling and temporary client demos. Provider integrations remain unavailable until configured and verified.`;
   }
+  if (/^(status|system\\s*status|health|ping|are\\s*you\\s*(online|there|alive|ready))\\b[!.?]*$/i.test(text)) {
+    return `### Irzam Studio Service Status
 
-  if (/^(status|system\s*status|health|ping|are\s*you\s*(online|there|alive|ready))\b[!.?]*$/i.test(text)) {
-    return `### Irzam Studio Systems Diagnostic — Operational (100%)\n\n- **Status**: All Services Online\n- **Active Rules**: ${agentRules.filter(r => r.is_active).length} enforced operational rules\n- **Connected Gmail Accounts**: ${gmailAccounts.filter(g => g.connected).length} active\n- **Tracked Leads**: ${trackedLeads.length} total (${trackedLeads.filter(l => l.status === 'replied').length} replied)\n- **Active Client Demos**: ${hostedDemos.filter(d => d.status === 'active').length} live\n- **Primary Brain**: ${config.selectedModel}\n- **Response Latency**: Instant (<15ms)`;
+- Workspace API: running
+- Qwen: ${process.env.FREELLM_API_KEY ? 'environment key configured; test pending' : 'not configured'}
+- Google Places: ${process.env.GOOGLE_MAPS_API_KEY ? 'environment key configured; test pending' : 'not configured'}
+- Gmail: not connected
+- Netlify: not connected
+- Scheduled workflows: not deployed`;
   }
-
   return null;
 }
 
@@ -2390,234 +1264,91 @@ function isLightInteraction(message: string, attachmentsCount: number): string |
 // CHAT & REAL-TIME SSE STREAMING (Phase 2 & 22)
 // ==========================================
 
+async function generateQwenCompletion(
+  message: string,
+  history: Array<{ role?: string; content?: string }> = [],
+  requestedModel?: string,
+): Promise<{ content: string; model: string }> {
+  const apiKey = process.env.FREELLM_API_KEY || await getVaultSecret('irzam_freellmapi_key');
+  if (!apiKey) throw new Error('FreeLLMAPI key is not configured.');
+  const base = (process.env.FREELLM_BASE_URL || config.freellmBaseUrl).replace(/\\/+$/, '').replace(/\\/chat\\/completions$/, '');
+  const model = process.env.QWEN_MODEL || requestedModel || config.selectedModel;
+  const messages = [
+    { role: 'system', content: buildEnrichedSystemPrompt() },
+    ...history.filter(item => (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
+      .slice(-12).map(item => ({ role: item.role as string, content: String(item.content).slice(0, 12000) })),
+    { role: 'user', content: String(message || '') },
+  ];
+  const response = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model, messages, temperature: config.temperature, max_tokens: 4096, stream: false }),
+    signal: AbortSignal.timeout(90000),
+  });
+  if (!response.ok) throw new Error(`FreeLLMAPI returned HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`);
+  const payload = await response.json() as any;
+  const value = payload.choices?.[0]?.message?.content;
+  const content = typeof value === 'string' ? value : Array.isArray(value) ? value.map((part: any) => part?.text || '').join('') : '';
+  if (!content.trim()) throw new Error('FreeLLMAPI returned an empty response.');
+  return { content, model: String(payload.model || model) };
+}
+
 app.post('/api/chat', async (req, res) => {
+  const { message, history = [], model, autoRoute } = req.body || {};
+  if (!message) return res.status(400).json({ error: 'Message is required.' });
+  let selectedModel = String(model || config.selectedModel);
+  if (autoRoute) {
+    const text = String(message).toLowerCase();
+    if (text.includes('code') || text.includes('website') || text.includes('demo')) selectedModel = process.env.QWEN_CODER_MODEL || selectedModel;
+    else if (text.includes('outreach') || text.includes('email')) selectedModel = process.env.QWEN_OUTREACH_MODEL || selectedModel;
+  }
   try {
-    const { message, attachments = [], history = [], model, autoRoute } = req.body;
-    if (!message && (!attachments || attachments.length === 0)) {
-      return res.status(400).json({ error: 'Message or attachment required' });
-    }
-
-    const lightResponse = isLightInteraction(message, attachments.length);
-    if (lightResponse) {
-      return res.json({
-        response: lightResponse,
-        modelUsed: 'Irzam Fast Engine (Instant)',
-        autoRouted: false,
-        deployedDemo: null,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    let selectedModelName = model || config.selectedModel;
-    let agentResponseText = '';
-    const enrichedPrompt = buildEnrichedSystemPrompt();
-
-    try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error('GEMINI_API_KEY is not configured in environment.');
-      const ai = new GoogleGenAI({ apiKey });
-      const parts: any[] = [];
-      if (message) parts.push({ text: message });
-
-      const candidateModels = ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-3.1-flash-lite'];
-      for (const candidate of candidateModels) {
-        try {
-          const result = await ai.models.generateContent({
-            model: candidate,
-            contents: parts,
-            config: {
-              systemInstruction: enrichedPrompt,
-              temperature: config.temperature,
-            }
-          });
-          agentResponseText = result.text || 'Irzam Studio response logged.';
-          break;
-        } catch {
-          continue;
-        }
-      }
-    } catch {
-      agentResponseText = `Irzam Studio processed your instruction according to active training rules. All systems operational.`;
-    }
-
-    res.json({
-      response: agentResponseText,
-      modelUsed: selectedModelName,
-      autoRouted: Boolean(autoRoute),
-      deployedDemo: null,
-      timestamp: new Date().toISOString()
-    });
+    const result = await generateQwenCompletion(String(message), Array.isArray(history) ? history : [], selectedModel);
+    return res.json({ response: result.content, modelUsed: result.model, autoRouted: Boolean(autoRoute), deployedDemo: null, timestamp: new Date().toISOString() });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    addLog('AI', 'error', `Qwen generation failed: ${error.message}`);
+    return res.status(502).json({ error: error.message, modelUsed: null });
   }
 });
 
-// GENUINE REAL-TIME TOKEN STREAMING (SSE)
 app.post('/api/chat/stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   if (res.flushHeaders) res.flushHeaders();
-
-  let isAborted = false;
-  req.on('close', () => { isAborted = true; });
-
-  const sendEvent = (event: string, data: any) => {
-    if (isAborted || res.writableEnded) return;
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    if ((res as any).flush) (res as any).flush();
-  };
-
-  const { message, attachments = [], history = [], model, autoRoute } = req.body;
-
+  let aborted = false;
+  req.on('close', () => { aborted = true; });
+  const send = (event: string, data: any) => { if (!aborted && !res.writableEnded) res.write(`event: ${event}\\ndata: ${JSON.stringify(data)}\\n\\n`); };
+  const { message, history = [], model, autoRoute } = req.body || {};
   try {
-    sendEvent('stage', { stage: 'receiving', label: 'Receiving message...' });
-
-    const lightResponse = isLightInteraction(message, (attachments || []).length);
-    if (lightResponse) {
-      sendEvent('stage', { stage: 'generating', label: 'Generating response...' });
-      const words = lightResponse.split(' ');
-      for (let i = 0; i < words.length; i++) {
-        if (isAborted) break;
-        sendEvent('chunk', { text: words[i] + (i === words.length - 1 ? '' : ' ') });
-        await new Promise(r => setTimeout(r, 12));
-      }
-      sendEvent('done', {
-        modelUsed: 'Irzam Fast Engine (Instant)',
-        fullText: lightResponse,
-        deployedDemo: null,
-      });
-      res.end();
-      return;
-    }
-
-    sendEvent('stage', { stage: 'retrieving_training', label: 'Retrieving personal training & operational rules...' });
-    const enrichedPrompt = buildEnrichedSystemPrompt();
-
-    sendEvent('stage', { stage: 'preparing_context', label: 'Preparing context...' });
-
-    let selectedModelName = model || config.selectedModel;
+    send('stage', { stage: 'receiving', label: 'Receiving message...' });
+    let selectedModel = String(model || config.selectedModel);
     if (autoRoute) {
-      const text = (message || '').toLowerCase();
-      if (text.includes('code') || text.includes('website') || text.includes('demo') || text.includes('html')) {
-        selectedModelName = 'Qwen 2.5 Coder 32B';
-      } else if (text.includes('outreach') || text.includes('email') || text.includes('pitch')) {
-        selectedModelName = 'Qwen 2.5 72B Instruct';
-      } else {
-        selectedModelName = 'Qwen 3.8 Max';
-      }
+      const text = String(message || '').toLowerCase();
+      if (text.includes('code') || text.includes('website') || text.includes('demo')) selectedModel = process.env.QWEN_CODER_MODEL || selectedModel;
+      else if (text.includes('outreach') || text.includes('email')) selectedModel = process.env.QWEN_OUTREACH_MODEL || selectedModel;
     }
-
-    sendEvent('stage', { stage: 'calling_engine', label: `Connecting to ${selectedModelName}...` });
-
-    let fullGeneratedText = '';
-    let finalModelUsed = selectedModelName;
-
-    // Use Gemini Streaming as high speed provider
-    try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error('GEMINI_API_KEY is not configured in environment.');
-
-      const ai = new GoogleGenAI({ apiKey });
-      const parts: any[] = [];
-      if (message) parts.push({ text: message });
-
-      for (const att of attachments) {
-        if (att.data && att.type?.startsWith('image/')) {
-          const base64Data = att.data.includes(',') ? att.data.split(',')[1] : att.data;
-          parts.push({
-            inlineData: {
-              mimeType: att.type,
-              data: base64Data
-            }
-          });
-        }
+    send('stage', { stage: 'calling_engine', label: `Connecting to ${selectedModel} via FreeLLMAPI...` });
+    const result = await generateQwenCompletion(String(message || ''), Array.isArray(history) ? history : [], selectedModel);
+    if (!aborted) {
+      send('stage', { stage: 'generating', label: 'Response received...' });
+      const chars = Array.from(result.content);
+      for (let i = 0; i < chars.length; i += 120) {
+        if (aborted) break;
+        send('chunk', { text: chars.slice(i, i + 120).join('') });
       }
-
-      sendEvent('stage', { stage: 'generating', label: 'Generating response...' });
-
-      const responseStream = await ai.models.generateContentStream({
-        model: 'gemini-2.5-flash',
-        contents: parts,
-        config: {
-          systemInstruction: enrichedPrompt,
-          temperature: config.temperature,
-          maxOutputTokens: 4096,
-        }
-      });
-
-      for await (const chunk of responseStream) {
-        if (isAborted) break;
-        const chunkText = chunk.text || '';
-        if (chunkText) {
-          fullGeneratedText += chunkText;
-          sendEvent('chunk', { text: chunkText });
-        }
-      }
-      finalModelUsed = `${selectedModelName} (High-Speed Engine)`;
-    } catch (err: any) {
-      fullGeneratedText = `Irzam Studio processed your directive following all active training rules.`;
-      sendEvent('chunk', { text: fullGeneratedText });
+      send('done', { modelUsed: result.model, fullText: result.content, deployedDemo: null });
     }
-
-    // Auto-deploy demo website if valid HTML block is detected
-    let deployedDemoInfo: HostedDemo | null = null;
-    const htmlBlockRegex = /```(?:html|htm)\s*([\s\S]*?)```/i;
-    const match = fullGeneratedText.match(htmlBlockRegex);
-
-    if (match && config.autoDeployDemos) {
-      const extractedHtml = match[1].trim();
-      if (extractedHtml.includes('<html') || extractedHtml.includes('<body') || extractedHtml.includes('<div')) {
-        const clientMatch = message.match(/(?:for|client)\s+([A-Z][a-zA-Z0-9\s]{2,20})/i);
-        const inferredClient = clientMatch ? clientMatch[1].trim() : 'Prospect Lead';
-        const inferredTitle = message.slice(0, 40).replace(/[^a-zA-Z0-9\s]/g, '').trim() || 'Interactive Prototype';
-
-        const demoId = `demo-${Date.now()}`;
-        const deployTarget = config.netlify.connected ? 'netlify' : 'edge_sandbox';
-        const liveNetlifyUrl = config.netlify.connected 
-          ? `https://${demoId}-${Math.random().toString(36).substring(2, 6)}.netlify.app`
-          : undefined;
-
-        const newDemo: HostedDemo = {
-          id: demoId,
-          slug: demoId,
-          title: inferredTitle,
-          clientName: inferredClient,
-          createdAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 48 * 3600000).toISOString(),
-          framework: 'Tailwind + HTML5',
-          status: 'active',
-          views: 1,
-          htmlContent: extractedHtml,
-          previewUrl: `/demo/${demoId}`,
-          deployTarget,
-          liveNetlifyUrl,
-        };
-
-        hostedDemos.unshift(newDemo);
-        deployedDemoInfo = newDemo;
-        addLog('HOSTING', 'success', `[AUTO-DEPLOY] Demo "${newDemo.title}" launched. Target: ${deployTarget.toUpperCase()}`);
-
-        const publicUrl = newDemo.liveNetlifyUrl || `/demo/${demoId}`;
-        const demoNote = `\n\n---\n### ✦ Live Client Demo Deployed\n- **Client**: ${inferredClient}\n- **Live URL**: [${publicUrl}](${publicUrl})\n- **Hosting Engine**: ${deployTarget === 'netlify' ? 'Netlify Global Edge API' : 'Irzam Studio Live Edge Sandbox'}\n- **Access**: Public temporary URL active and ready for client review.`;
-        fullGeneratedText += demoNote;
-        sendEvent('chunk', { text: demoNote });
-      }
+    return res.end();
+  } catch (error: any) {
+    addLog('AI', 'error', `Qwen stream failed: ${error.message}`);
+    if (!aborted) {
+      const messageText = `AI model unavailable: ${error.message}`;
+      send('chunk', { text: messageText });
+      send('done', { modelUsed: null, fullText: messageText, deployedDemo: null, error: true });
     }
-
-    sendEvent('stage', { stage: 'done', label: 'Done' });
-    sendEvent('done', {
-      modelUsed: finalModelUsed,
-      deployedDemo: deployedDemoInfo,
-      fullText: fullGeneratedText,
-    });
-    res.end();
-  } catch (err: any) {
-    sendEvent('stage', { stage: 'done', label: 'Done' });
-    sendEvent('chunk', { text: `\n\nExecution error: ${err.message || 'Connection closed'}` });
-    sendEvent('done', { modelUsed: 'Failover Safe Engine', deployedDemo: null });
-    res.end();
+    return res.end();
   }
 });
 
