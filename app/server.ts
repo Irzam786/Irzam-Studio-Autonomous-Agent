@@ -758,228 +758,214 @@ app.post('/api/connectors/:id/disconnect', async (req, res) => {
 // PERSONAL TRAINING SYSTEM ROUTES (Phase 11)
 // ==========================================
 
-app.get('/api/training/rules', (req, res) => {
-  res.json({ rules: agentRules });
+app.get('/api/training/rules', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ rules: [], error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('agent_rules').select('*').order('created_at', { ascending: false });
+  if (error) return res.status(502).json({ rules: [], error: error.message });
+  return res.json({ rules: data || [] });
 });
 
-app.post('/api/training/rules', (req, res) => {
-  const { category, title, rule_text, parameters } = req.body;
-  if (!title || !rule_text) {
-    return res.status(400).json({ error: 'title and rule_text required' });
-  }
-
-  const newRule: AgentRule = {
-    id: `rule-${Date.now()}`,
-    category: category || 'general',
-    title: title.trim(),
-    rule_text: rule_text.trim(),
-    parameters: parameters || {},
-    is_active: true,
-    version: 1,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+app.post('/api/training/rules', async (req, res) => {
+  const { category, title, rule_text, parameters } = req.body || {};
+  if (!title || !rule_text) return res.status(400).json({ error: 'title and rule_text required' });
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
+  const now = new Date().toISOString();
+  const record = {
+    id: randomUUID(), category: category || 'general', title: String(title).trim(),
+    rule_text: String(rule_text).trim(), parameters: parameters || {}, is_active: true,
+    version: 1, created_at: now, updated_at: now,
   };
-
-  agentRules.unshift(newRule);
-  addLog('AGENT', 'success', `[TRAINING] Created operational rule: "${newRule.title}"`);
-  res.json({ success: true, rule: newRule });
+  const { data, error } = await db.from('agent_rules').insert(record).select('*').single();
+  if (error) return res.status(502).json({ error: error.message });
+  return res.json({ success: true, rule: data });
 });
 
-app.patch('/api/training/rules/:id', (req, res) => {
-  const { id } = req.params;
-  const { is_active, title, rule_text, parameters } = req.body;
-  const rule = agentRules.find(r => r.id === id);
-  if (!rule) return res.status(404).json({ error: 'Rule not found' });
-
-  if (is_active !== undefined) rule.is_active = Boolean(is_active);
-  if (title) rule.title = title.trim();
-  if (rule_text) rule.rule_text = rule_text.trim();
-  if (parameters) rule.parameters = parameters;
-  rule.updated_at = new Date().toISOString();
-
-  addLog('AGENT', 'info', `[TRAINING] Rule "${rule.title}" updated (Active: ${rule.is_active}).`);
-  res.json({ success: true, rule });
+app.patch('/api/training/rules/:id', async (req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
+  const { is_active, title, rule_text, parameters } = req.body || {};
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+  if (is_active !== undefined) patch.is_active = Boolean(is_active);
+  if (title !== undefined) patch.title = String(title).trim();
+  if (rule_text !== undefined) patch.rule_text = String(rule_text).trim();
+  if (parameters !== undefined) patch.parameters = parameters;
+  const { data, error } = await db.from('agent_rules').update(patch).eq('id', req.params.id).select('*').maybeSingle();
+  if (error) return res.status(502).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Rule not found.' });
+  return res.json({ success: true, rule: data });
 });
 
-app.delete('/api/training/rules/:id', (req, res) => {
-  const { id } = req.params;
-  const idx = agentRules.findIndex(r => r.id === id);
-  if (idx !== -1) {
-    const removed = agentRules.splice(idx, 1)[0];
-    addLog('AGENT', 'info', `[TRAINING] Deleted operational rule: "${removed.title}".`);
-    return res.json({ success: true, message: 'Rule deleted' });
-  }
-  res.status(404).json({ error: 'Rule not found' });
+app.delete('/api/training/rules/:id', async (req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('agent_rules').delete().eq('id', req.params.id).select('id').maybeSingle();
+  if (error) return res.status(502).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Rule not found.' });
+  return res.json({ success: true, message: 'Rule deleted.' });
 });
 
-app.get('/api/training/messages', (req, res) => {
-  res.json({ messages: trainingMessages });
+app.get('/api/training/messages', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ messages: [], error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('training_messages').select('*').eq('thread_id', 'training-core').order('created_at', { ascending: true });
+  if (error) return res.status(502).json({ messages: [], error: error.message });
+  return res.json({ messages: data || [] });
 });
 
 app.post('/api/training/chat', async (req, res) => {
-  const { message } = req.body;
-  if (!message || !message.trim()) {
-    return res.status(400).json({ error: 'Message required' });
-  }
+  const message = String(req.body?.message || '').trim();
+  if (!message) return res.status(400).json({ error: 'Message required.' });
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
 
-  const userMsg: TrainingMessage = {
-    id: `tm-${Date.now()}`,
-    role: 'user',
-    content: message.trim(),
-    created_at: new Date().toISOString(),
-  };
-  trainingMessages.push(userMsg);
+  const lower = message.toLowerCase();
+  let category: AgentRule['category'] = 'general';
+  if (lower.includes('review') || lower.includes('rating') || lower.includes('qualify') || lower.includes('website')) category = 'qualification';
+  else if (lower.includes('tone') || lower.includes('words') || lower.includes('email') || lower.includes('pitch')) category = 'outreach_style';
+  else if (lower.includes('follow') || lower.includes('days') || lower.includes('stage')) category = 'follow_up';
 
-  // Extract structured rule if instructions contain directive keywords
-  const text = message.toLowerCase();
-  let extractedTitle = '';
-  let extractedCategory: AgentRule['category'] = 'general';
-
-  if (text.includes('review') || text.includes('rating') || text.includes('qualify') || text.includes('website')) {
-    extractedCategory = 'qualification';
-    extractedTitle = `Qualification Rule: ${message.slice(0, 40).replace(/[^a-zA-Z0-9\s]/g, '')}`;
-  } else if (text.includes('tone') || text.includes('words') || text.includes('email') || text.includes('pitch')) {
-    extractedCategory = 'outreach_style';
-    extractedTitle = `Outreach Style Directive: ${message.slice(0, 40).replace(/[^a-zA-Z0-9\s]/g, '')}`;
-  } else if (text.includes('follow') || text.includes('days') || text.includes('stage')) {
-    extractedCategory = 'follow_up';
-    extractedTitle = `Follow-Up Timing Rule: ${message.slice(0, 40).replace(/[^a-zA-Z0-9\s]/g, '')}`;
-  } else {
-    extractedTitle = `Operational Guideline: ${message.slice(0, 40).replace(/[^a-zA-Z0-9\s]/g, '')}`;
-  }
-
-  const newRule: AgentRule = {
-    id: `rule-${Date.now()}`,
-    category: extractedCategory,
-    title: extractedTitle,
-    rule_text: message.trim(),
-    is_active: true,
-    version: 1,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-  agentRules.unshift(newRule);
-
-  const assistantResponseContent = `Understood. I have committed this directive into permanent memory as an active operational rule:
-- **Category**: ${extractedCategory.toUpperCase()}
-- **Rule**: "${newRule.title}"
-- **Status**: Enforced across research, chat reasoning, and outreach workflows.`;
-
-  const asstMsg: TrainingMessage = {
-    id: `tm-${Date.now() + 1}`,
-    role: 'assistant',
-    content: assistantResponseContent,
-    extracted_rules_count: 1,
-    created_at: new Date().toISOString(),
-  };
-  trainingMessages.push(asstMsg);
-
-  addLog('AGENT', 'success', `[PERSONAL TRAINING] Learned new rule: "${newRule.title}"`);
-  res.json({
-    success: true,
-    userMessage: userMsg,
-    assistantMessage: asstMsg,
-    newRule,
+  const now = new Date().toISOString();
+  const title = `Training rule: ${message.slice(0, 64)}`;
+  const { error: threadError } = await db.from('training_conversations').upsert({
+    id: 'training-core', title: 'Irzam Studio Training', updated_at: now,
   });
+  if (threadError) return res.status(502).json({ error: threadError.message });
+  const { data: userMessage, error: userError } = await db.from('training_messages').insert({
+    thread_id: 'training-core', role: 'user', content: message, created_at: now,
+  }).select('*').single();
+  if (userError) return res.status(502).json({ error: userError.message });
+
+  const { data: newRule, error: ruleError } = await db.from('agent_rules').insert({
+    id: randomUUID(), category, title, rule_text: message, parameters: {}, is_active: true,
+    version: 1, created_at: now, updated_at: now,
+  }).select('*').single();
+  if (ruleError) return res.status(502).json({ error: ruleError.message });
+
+  const assistantContent = `Saved as an active operational rule in Supabase.
+
+- Category: ${category}
+- Rule: ${title}
+- Status: Active in persistent training memory.`;
+  const { data: assistantMessage, error: assistantError } = await db.from('training_messages').insert({
+    thread_id: 'training-core', role: 'assistant', content: assistantContent,
+    extracted_rules_count: 1, created_at: new Date().toISOString(),
+  }).select('*').single();
+  if (assistantError) return res.status(502).json({ error: assistantError.message });
+  return res.json({ success: true, userMessage, assistantMessage, newRule });
 });
 
 // ==========================================
 // CAMPAIGNS & OUTREACH QUEUE (Phase 12 & 13)
 // ==========================================
 
-app.get('/api/campaigns', (req, res) => {
-  res.json({ campaigns });
+app.get('/api/campaigns', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ campaigns: [], error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('campaigns').select('*').order('created_at', { ascending: false });
+  if (error) return res.status(502).json({ campaigns: [], error: error.message });
+  return res.json({ campaigns: data || [] });
 });
 
-app.post('/api/campaigns', (req, res) => {
-  const { name, niche, city, min_reviews, daily_limit, pitch_angle, demo_slug } = req.body;
-  if (!name || !niche) {
-    return res.status(400).json({ error: 'name and niche are required' });
-  }
-
-  const newCampaign: Campaign = {
-    id: `camp-${Date.now()}`,
-    name: name.trim(),
-    niche: niche.trim(),
-    city: city ? city.trim() : 'All Cities',
+app.post('/api/campaigns', async (req, res) => {
+  const { name, niche, city, min_reviews, daily_limit, pitch_angle, demo_slug } = req.body || {};
+  if (!name || !niche) return res.status(400).json({ error: 'name and niche are required' });
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
+  const now = new Date().toISOString();
+  const record = {
+    id: randomUUID(), name: String(name).trim(), niche: String(niche).trim(),
+    city: city ? String(city).trim() : 'All Cities',
     min_reviews: min_reviews !== undefined ? Number(min_reviews) : 50,
     daily_limit: daily_limit !== undefined ? Number(daily_limit) : 10,
-    status: 'active',
-    pitch_angle: pitch_angle || 'Interactive Prototype Demo',
-    demo_slug: demo_slug || undefined,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    status: 'paused', pitch_angle: pitch_angle || 'Interactive Prototype Demo',
+    demo_slug: demo_slug || null, created_at: now, updated_at: now,
   };
-
-  campaigns.unshift(newCampaign);
-  addLog('OUTREACH', 'success', `[CAMPAIGN] Launched campaign "${newCampaign.name}".`);
-  res.json({ success: true, campaign: newCampaign });
+  const { data, error } = await db.from('campaigns').insert(record).select('*').single();
+  if (error) return res.status(502).json({ error: error.message });
+  addLog('OUTREACH', 'info', `Saved campaign "${record.name}" as paused in Supabase.`);
+  return res.json({ success: true, campaign: data });
 });
 
-app.patch('/api/campaigns/:id', (req, res) => {
-  const { id } = req.params;
-  const { status, daily_limit, min_reviews } = req.body;
-  const camp = campaigns.find(c => c.id === id);
-  if (!camp) return res.status(404).json({ error: 'Campaign not found' });
-
-  if (status) camp.status = status;
-  if (daily_limit !== undefined) camp.daily_limit = Number(daily_limit);
-  if (min_reviews !== undefined) camp.min_reviews = Number(min_reviews);
-  camp.updated_at = new Date().toISOString();
-
-  res.json({ success: true, campaign: camp });
-});
-
-app.delete('/api/campaigns/:id', (req, res) => {
-  const { id } = req.params;
-  const idx = campaigns.findIndex(c => c.id === id);
-  if (idx !== -1) {
-    campaigns.splice(idx, 1);
-    return res.json({ success: true, message: 'Campaign deleted' });
+app.patch('/api/campaigns/:id', async (req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
+  const { status, daily_limit, min_reviews } = req.body || {};
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+  if (status !== undefined) {
+    if (!['active','paused','completed'].includes(status)) return res.status(400).json({ error: 'Invalid campaign status.' });
+    patch.status = status;
   }
-  res.status(404).json({ error: 'Campaign not found' });
+  if (daily_limit !== undefined) patch.daily_limit = Number(daily_limit);
+  if (min_reviews !== undefined) patch.min_reviews = Number(min_reviews);
+  const { data, error } = await db.from('campaigns').update(patch).eq('id', req.params.id).select('*').maybeSingle();
+  if (error) return res.status(502).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Campaign not found.' });
+  return res.json({ success: true, campaign: data });
 });
 
-app.get('/api/outreach/queue', (req, res) => {
-  res.json({ queue: outreachQueue });
+app.delete('/api/campaigns/:id', async (req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('campaigns').delete().eq('id', req.params.id).select('id').maybeSingle();
+  if (error) return res.status(502).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Campaign not found.' });
+  return res.json({ success: true, message: 'Campaign deleted.' });
 });
 
-app.post('/api/outreach/queue/schedule', (req, res) => {
-  const { lead_id, subject, body, attached_demo_url, scheduled_for_pkt } = req.body;
-  const lead = trackedLeads.find(l => l.id === lead_id);
-  if (!lead) return res.status(404).json({ error: 'Lead not found' });
+app.get('/api/outreach/queue', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ queue: [], error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('outreach_queue').select('*').order('scheduled_for_pkt', { ascending: true });
+  if (error) return res.status(502).json({ queue: [], error: error.message });
+  return res.json({ queue: (data || []).map((row: any) => ({ ...row, body_preview: String(row.body || '').slice(0, 120) })) });
+});
 
-  const newItem: OutreachQueueItem = {
-    id: `queue-${Date.now()}`,
-    lead_id,
-    business_name: lead.business_name,
-    recipient_email: lead.email,
+app.post('/api/outreach/queue/schedule', async (req, res) => {
+  const { lead_id, subject, body, attached_demo_url, scheduled_for_pkt } = req.body || {};
+  if (!lead_id || !body) return res.status(400).json({ error: 'lead_id and a message body are required.' });
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
+  const { data: lead, error: leadError } = await db.from('leads').select('*').eq('id', lead_id).maybeSingle();
+  if (leadError) return res.status(502).json({ error: leadError.message });
+  if (!lead) return res.status(404).json({ error: 'Lead not found.' });
+  if (!lead.email || lead.email_verified !== true || !lead.email_source || lead.email_source === 'manual_entry') {
+    return res.status(409).json({ error: 'This lead does not have a verified public business email. It cannot be scheduled for outreach.' });
+  }
+  if (!lead.website || Number(lead.google_reviews_count || 0) < 50) {
+    return res.status(409).json({ error: 'Lead does not meet the website and minimum 50 Google review qualification rules.' });
+  }
+  const normalizedEmail = String(lead.email).trim().toLowerCase();
+  const { data: suppressed, error: suppressionError } = await db.from('suppression_list').select('email').eq('email', normalizedEmail).maybeSingle();
+  if (suppressionError) return res.status(502).json({ error: suppressionError.message });
+  if (suppressed) return res.status(409).json({ error: 'This email is on the suppression list and cannot be contacted.' });
+
+  const record = {
+    id: randomUUID(), lead_id, business_name: lead.business_name, recipient_email: normalizedEmail,
     subject: subject || `Interactive Prototype Demo for ${lead.business_name}`,
-    body_preview: body ? body.slice(0, 120) : '',
-    attached_demo_url: attached_demo_url || lead.demo_url || null,
+    body: String(body), attached_demo_url: attached_demo_url || lead.demo_url || null,
     scheduled_for_pkt: scheduled_for_pkt || new Date(Date.now() + 3600000).toISOString(),
-    status: 'scheduled',
-    followup_stage: 0,
-    created_at: new Date().toISOString(),
+    status: 'scheduled', followup_stage: 0, created_at: new Date().toISOString(),
   };
-
-  outreachQueue.unshift(newItem);
-  addLog('OUTREACH', 'info', `[QUEUE] Scheduled 1-hour slot for ${lead.business_name} (${lead.email}).`);
-  res.json({ success: true, queueItem: newItem });
+  const { data, error } = await db.from('outreach_queue').insert(record).select('*').single();
+  if (error) return res.status(502).json({ error: error.message });
+  return res.json({ success: true, queueItem: { ...data, body_preview: data.body.slice(0, 120) } });
 });
 
 app.post('/api/outreach/queue/dispatch-due', (_req, res) => {
   return res.status(503).json({ success: false, count: 0, error: 'Gmail OAuth and the durable sending worker are not configured. No email was sent.' });
 });
 
-app.post('/api/outreach/queue/:id/cancel', (req, res) => {
-  const { id } = req.params;
-  const item = outreachQueue.find(q => q.id === id);
-  if (!item) return res.status(404).json({ error: 'Queue item not found' });
-
-  item.status = 'cancelled';
-  addLog('OUTREACH', 'warn', `[QUEUE] Cancelled scheduled email to ${item.business_name}.`);
-  res.json({ success: true, queueItem: item });
+app.post('/api/outreach/queue/:id/cancel', async (req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('outreach_queue')
+    .update({ status: 'cancelled' }).eq('id', req.params.id)
+    .in('status', ['draft_generated','scheduled']).select('*').maybeSingle();
+  if (error) return res.status(502).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Queue item not found or no longer cancellable.' });
+  return res.json({ success: true, queueItem: { ...data, body_preview: data.body.slice(0, 120) } });
 });
 
 // Follow-Up Engine Check (Phase 13)
@@ -1074,8 +1060,12 @@ app.post('/api/inbox/replies/:id/send-response', (_req, res) => {
 // DAILY REPORTS (Phase 15)
 // ==========================================
 
-app.get('/api/reports', (req, res) => {
-  res.json({ reports: dailyReports });
+app.get('/api/reports', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ reports: [], error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('daily_reports').select('*').order('generated_at_pkt', { ascending: false });
+  if (error) return res.status(502).json({ reports: [], error: error.message });
+  return res.json({ reports: data || [] });
 });
 
 app.post('/api/reports/generate', (_req, res) => {
@@ -1089,8 +1079,17 @@ app.post('/api/reports/:id/send', (_req, res) => {
 // AUTOMATION & WORKFLOW RUNS (Phase 19 & 20)
 // ==========================================
 
-app.get('/api/automation/history', (req, res) => {
-  res.json({ runs: workflowRuns });
+app.get('/api/automation/history', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ runs: [], error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('workflow_runs').select('*').order('start_time', { ascending: false }).limit(50);
+  if (error) return res.status(502).json({ runs: [], error: error.message });
+  return res.json({ runs: (data || []).map((row: any) => ({
+    id: row.id, workflow_type: row.workflow_type, status: row.status,
+    started_at: row.start_time, completed_at: row.completion_time || undefined,
+    items_processed: row.items_processed || 0, summary: row.result_summary || '',
+    error_details: row.error_details || undefined,
+  })) });
 });
 
 app.post('/api/automation/trigger/:workflow', (_req, res) => {
@@ -1108,11 +1107,21 @@ app.get('/oauth/callback', (_req, res) => res.status(503).send('Gmail OAuth is n
 app.get('/oauth2callback', (_req, res) => res.status(503).send('Gmail OAuth is not configured.'));
 app.post('/api/gmail/oauth/callback', (_req, res) => res.status(503).json({ success: false, error: 'Simulated OAuth callback disabled.' }));
 
-app.get('/api/gmail/accounts', (req, res) => {
-  res.json({
-    accounts: gmailAccounts.map(a => ({ ...a, refreshToken: undefined })),
-    replies: detectedReplies,
-  });
+app.get('/api/gmail/accounts', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ accounts: [], replies: [], error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('gmail_tokens')
+    .select('id,email,label,connected,connected_at,daily_send_quota,sent_today,inbox_unread_count,reply_watcher_active,last_sync_at,is_primary,token_scope,created_at')
+    .order('created_at', { ascending: false });
+  if (error) return res.status(502).json({ accounts: [], replies: [], error: error.message });
+  const accounts = (data || []).map((row: any) => ({
+    id: row.id, email: row.email, label: row.label || row.email, connected: false,
+    connectedAt: row.connected_at || row.created_at, dailySendQuota: row.daily_send_quota || 500,
+    sentToday: row.sent_today || 0, inboxUnreadCount: row.inbox_unread_count || 0,
+    replyWatcherActive: false, lastSyncAt: row.last_sync_at || '',
+    isPrimary: Boolean(row.is_primary), hasRefreshToken: false, tokenScope: row.token_scope || '',
+  }));
+  return res.json({ accounts, replies: [] });
 });
 
 app.delete('/api/gmail/accounts/:id', (req, res) => {
@@ -1142,8 +1151,20 @@ app.post('/api/gmail/send', (_req, res) => {
 // DEMO HOSTING & NETLIFY DEPLOYMENT (Phase 16)
 // ==========================================
 
-app.get('/api/demos', (req, res) => {
-  res.json({ demos: hostedDemos });
+app.get('/api/demos', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ demos: [], error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('client_demos').select('*').order('created_at', { ascending: false });
+  if (error) return res.status(502).json({ demos: [], error: error.message });
+  const demos = (data || []).map((row: any) => ({
+    id: row.id, slug: row.slug || '', title: row.title || 'Client demo',
+    clientName: row.client_name || '', createdAt: row.created_at,
+    expiresAt: row.expires_at || '', framework: row.framework || 'HTML5',
+    status: row.status || 'active', views: row.views || 0,
+    htmlContent: row.html_content || '', previewUrl: row.preview_url || row.live_url,
+    deployTarget: row.deploy_target || 'netlify', liveNetlifyUrl: row.live_netlify_url || row.live_url,
+  }));
+  return res.json({ demos });
 });
 
 app.post('/api/demos', (_req, res) => {
@@ -1182,50 +1203,60 @@ app.get('/demo/:id', (req, res) => {
 // LEADS ENGINE (Phase 8 & 9)
 // ==========================================
 
-app.get('/api/leads', (req, res) => {
-  res.json({ leads: trackedLeads });
+app.get('/api/leads', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ leads: [], error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('leads').select('*').order('created_at', { ascending: false });
+  if (error) return res.status(502).json({ leads: [], error: error.message });
+  return res.json({ leads: data || [] });
 });
 
-app.post('/api/leads', (req, res) => {
+app.post('/api/leads', async (req, res) => {
   const { business_name, email, phone, city, niche, notes, demo_url } = req.body || {};
   if (!business_name || !email) return res.status(400).json({ error: 'Business name and email are required.' });
   const normalizedEmail = String(email).trim().toLowerCase();
   if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(normalizedEmail)) return res.status(400).json({ error: 'Enter a valid email address.' });
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
   const now = new Date().toISOString();
-  const lead: Lead = {
+  const record = {
     id: randomUUID(), business_name: String(business_name).trim(), email: normalizedEmail,
-    phone: phone ? String(phone).trim() : undefined, city: city ? String(city).trim() : 'Undisclosed',
+    phone: phone ? String(phone).trim() : null, city: city ? String(city).trim() : 'Undisclosed',
     niche: niche ? String(niche).trim() : 'Unclassified', status: 'pending',
-    notes: notes ? String(notes).trim() : undefined, demo_url: demo_url ? String(demo_url).trim() : undefined,
+    notes: notes ? String(notes).trim() : null, demo_url: demo_url ? String(demo_url).trim() : null,
     email_source: 'manual_entry', email_verified: false, google_reviews_count: 0,
     created_at: now, updated_at: now,
   };
-  trackedLeads.unshift(lead);
-  addLog('SYSTEM', 'info', `Manually entered lead ${lead.business_name}; review count and email verification remain unverified.`);
-  return res.json({ success: true, lead });
+  const { data, error } = await db.from('leads').insert(record).select('*').single();
+  if (error) return res.status(502).json({ error: error.message });
+  addLog('SYSTEM', 'info', `Saved manually entered lead ${record.business_name} to Supabase; reviews/email remain unverified.`);
+  return res.json({ success: true, lead: data });
 });
 
-app.patch('/api/leads/:id', (req, res) => {
-  const { id } = req.params;
-  const { status, notes, demo_url } = req.body;
-  const lead = trackedLeads.find(l => l.id === id);
-  if (!lead) return res.status(404).json({ error: 'Lead not found' });
-  if (status) lead.status = status;
-  if (notes !== undefined) lead.notes = notes;
-  if (demo_url !== undefined) lead.demo_url = demo_url;
-  lead.updated_at = new Date().toISOString();
-  res.json({ success: true, lead });
-});
-
-app.delete('/api/leads/:id', (req, res) => {
-  const { id } = req.params;
-  const index = trackedLeads.findIndex(l => l.id === id);
-  if (index !== -1) {
-    const removed = trackedLeads.splice(index, 1)[0];
-    addLog('SYSTEM', 'info', `Removed lead: ${removed.business_name}`);
-    return res.json({ success: true, message: 'Lead removed' });
+app.patch('/api/leads/:id', async (req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
+  const patch: Record<string, any> = { updated_at: new Date().toISOString() };
+  const { status, notes, demo_url } = req.body || {};
+  if (status !== undefined) {
+    if (!['pending','contacted','replied'].includes(status)) return res.status(400).json({ error: 'Invalid lead status.' });
+    patch.status = status;
   }
-  res.status(404).json({ error: 'Lead not found' });
+  if (notes !== undefined) patch.notes = notes;
+  if (demo_url !== undefined) patch.demo_url = demo_url;
+  const { data, error } = await db.from('leads').update(patch).eq('id', req.params.id).select('*').maybeSingle();
+  if (error) return res.status(502).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Lead not found.' });
+  return res.json({ success: true, lead: data });
+});
+
+app.delete('/api/leads/:id', async (req, res) => {
+  const db = getSupabaseServerClient();
+  if (!db) return res.status(503).json({ error: 'Server-side Supabase service-role access is not configured.' });
+  const { data, error } = await db.from('leads').delete().eq('id', req.params.id).select('id').maybeSingle();
+  if (error) return res.status(502).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Lead not found.' });
+  return res.json({ success: true, message: 'Lead deleted from Supabase.' });
 });
 
 app.post('/api/leads/:id/dispatch', (_req, res) => {
