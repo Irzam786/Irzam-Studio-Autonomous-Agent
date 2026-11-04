@@ -2,7 +2,6 @@ import express from 'express';
 import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
-import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
@@ -89,7 +88,7 @@ When asked to build, code, or demo a website, output the complete, self-containe
   },
   supabase: {
     url: process.env.SUPABASE_URL || 'https://fgksgytuglpmzhqcdasb.supabase.co',
-    anonKey: process.env.SUPABASE_ANON_KEY || 'sb_publishable_Z8IOLaPoA7BVExW3PcHAgg_OSPMDAi1',
+    anonKey: '',
     connected: false,
     lastSyncAt: undefined,
   },
@@ -502,55 +501,6 @@ function addLog(category: LogEntry['category'], level: LogEntry['level'], messag
   if (systemLogs.length > 250) systemLogs.pop();
 }
 
-// Supabase synchronization helpers
-const CONFIG_BACKUP_PATH = path.resolve(__dirname, 'data_system_config.json');
-
-function loadLocalSystemConfig() {
-  try {
-    if (fs.existsSync(CONFIG_BACKUP_PATH)) {
-      const raw = fs.readFileSync(CONFIG_BACKUP_PATH, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (parsed.ownerPin) config.ownerPin = String(parsed.ownerPin).trim();
-      if (parsed.freellmApiKey) config.freellmApiKey = String(parsed.freellmApiKey).trim();
-      if (parsed.freellmBaseUrl) config.freellmBaseUrl = parsed.freellmBaseUrl;
-      if (parsed.selectedModel) config.selectedModel = parsed.selectedModel;
-      if (parsed.temperature !== undefined) config.temperature = Number(parsed.temperature);
-      if (parsed.netlifyToken) {
-        config.netlify.token = String(parsed.netlifyToken).trim();
-        config.netlify.connected = true;
-      }
-      if (parsed.googleMapsApiKey) config.googleMapsApiKey = String(parsed.googleMapsApiKey).trim();
-      if (parsed.tavilyApiKey) config.tavilyApiKey = String(parsed.tavilyApiKey).trim();
-      if (parsed.hunterApiKey) config.hunterApiKey = String(parsed.hunterApiKey).trim();
-      if (parsed.prospeoApiKey) config.prospeoApiKey = String(parsed.prospeoApiKey).trim();
-      console.log('[CONFIG] Successfully loaded settings from local persistence file.');
-    }
-  } catch (e) {
-    console.warn('[CONFIG] Local file load deferred:', e);
-  }
-}
-
-function saveLocalSystemConfig() {
-  try {
-    const toSave = {
-      ownerPin: config.ownerPin,
-      freellmApiKey: config.freellmApiKey,
-      freellmBaseUrl: config.freellmBaseUrl,
-      selectedModel: config.selectedModel,
-      temperature: config.temperature,
-      netlifyToken: config.netlify.token,
-      googleMapsApiKey: config.googleMapsApiKey,
-      tavilyApiKey: config.tavilyApiKey,
-      hunterApiKey: config.hunterApiKey,
-      prospeoApiKey: config.prospeoApiKey,
-      updatedAt: new Date().toISOString()
-    };
-    fs.writeFileSync(CONFIG_BACKUP_PATH, JSON.stringify(toSave, null, 2), 'utf-8');
-  } catch (e) {
-    console.warn('[CONFIG] Local file save error:', e);
-  }
-}
-
 async function syncConfigToSupabase() {
   // Credentials live in Supabase Vault, never in system_config or local JSON.
   return;
@@ -756,23 +706,8 @@ app.post('/api/connectors/:id/test', (_req, res) => {
   return res.status(503).json({ success: false, message: 'Provider connection tests are temporarily disabled until credentials can be loaded from Vault. No test success is assumed.' });
 });
 
-app.post('/api/connectors/:id/disconnect', async (req, res) => {
-  const { id } = req.params;
-  const connector = connectorCatalog.find(c => c.id === id);
-  if (!connector) return res.status(404).json({ error: 'Connector not found' });
-
-  if (id === 'freellmapi') config.freellmApiKey = '';
-  if (id === 'netlify') { config.netlify.token = ''; config.netlify.connected = false; }
-  if (id === 'google_places') config.googleMapsApiKey = '';
-  if (id === 'tavily') config.tavilyApiKey = '';
-  if (id === 'hunter') config.hunterApiKey = '';
-  if (id === 'prospeo') config.prospeoApiKey = '';
-
-  connector.status = 'disconnected';
-  connector.maskedKey = undefined;
-  await syncConfigToSupabase();
-  addLog('SYSTEM', 'info', `[CONNECTOR] Disconnected ${connector.name}.`);
-  res.json({ success: true, connector });
+app.post('/api/connectors/:id/disconnect', (_req, res) => {
+  return res.status(503).json({ success: false, error: 'Credential deletion is disabled until the Vault secret-revocation flow is implemented. Connector status was not changed.' });
 });
 
 // ==========================================
