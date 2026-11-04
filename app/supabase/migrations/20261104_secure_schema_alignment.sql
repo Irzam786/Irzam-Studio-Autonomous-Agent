@@ -35,7 +35,17 @@ begin
       google_maps_api_key=null,tavily_api_key=null,hunter_api_key=null,prospeo_api_key=null,
       secret_storage_migrated_at=now(),updated_at=now()
   where id=1;
-end $$;
+end $;
+
+-- Remove the legacy plaintext credential columns after Vault transfer.
+alter table public.system_config
+  drop column if exists pin_code,
+  drop column if exists freellmapi_key,
+  drop column if exists netlify_token,
+  drop column if exists google_maps_api_key,
+  drop column if exists tavily_api_key,
+  drop column if exists hunter_api_key,
+  drop column if exists prospeo_api_key;
 
 create table if not exists public.agent_rules (
  id uuid primary key default gen_random_uuid(), category text not null default 'general', title text not null,
@@ -83,7 +93,7 @@ create table if not exists public.outreach_queue (
  next_followup_due timestamptz, created_at timestamptz not null default now()
 );
 
-alter table public.gmail_tokens alter column refresh_token drop not null;
+alter table public.gmail_tokens drop column if exists refresh_token, drop column if exists access_token;
 alter table public.gmail_tokens
  add column if not exists label text, add column if not exists connected boolean not null default false,
  add column if not exists connected_at timestamptz, add column if not exists daily_send_quota integer not null default 500,
