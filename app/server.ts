@@ -551,7 +551,7 @@ const OWNER_AUTH_MAX_ATTEMPTS = 8;
 
 // Every API endpoint is protected by a signed, HttpOnly owner session.
 app.use('/api', (req, res, next) => {
-  if (req.path === '/auth/verify' || req.path === '/status') return next();
+  if (req.path === '/auth/verify' || req.path === '/auth/logout') return next();
   const raw = readCookie(req, 'irzam_session');
   if (!raw) return res.status(401).json({ error: 'Owner session required.' });
   const [expiresAt, signature] = raw.split('.');
@@ -603,6 +603,13 @@ app.post('/api/auth/verify', async (req, res) => {
   res.setHeader('Set-Cookie', cookieParts.join('; '));
   addLog('SYSTEM', 'info', 'Owner authenticated with a signed server-side session.');
   return res.json({ success: true, message: 'Access granted.' });
+});
+
+app.post('/api/auth/logout', (_req, res) => {
+  const cookieParts = ['irzam_session=', 'HttpOnly', 'SameSite=Strict', 'Path=/', 'Max-Age=0'];
+  if (process.env.NODE_ENV === 'production') cookieParts.push('Secure');
+  res.setHeader('Set-Cookie', cookieParts.join('; '));
+  return res.json({ success: true });
 });
 
 app.post('/api/auth/change-pin', (_req, res) => {
@@ -1305,7 +1312,7 @@ app.post('/api/chat/stream', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   if (res.flushHeaders) res.flushHeaders();
   let aborted = false;
-  req.on('close', () => { aborted = true; });
+  res.on('close', () => { aborted = true; });
   const send = (event: string, data: any) => { if (!aborted && !res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
   const { message, history = [], model, autoRoute } = req.body || {};
   try {
