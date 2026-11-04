@@ -14,6 +14,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
+app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -594,6 +595,10 @@ function buildEnrichedSystemPrompt(): string {
 // API ROUTES: CORE SYSTEM & AUTH
 // ==========================================
 
+const ownerAuthAttempts = new Map<string, { count: number; windowStartedAt: number }>();
+const OWNER_AUTH_WINDOW_MS = 15 * 60 * 1000;
+const OWNER_AUTH_MAX_ATTEMPTS = 8;
+
 // Every API endpoint is protected by a signed, HttpOnly owner session.
 app.use('/api', (req, res, next) => {
   if (req.path === '/auth/verify' || req.path === '/status') return next();
@@ -620,15 +625,27 @@ app.use('/api', (req, res, next) => {
 app.post('/api/auth/verify', async (req, res) => {
   const suppliedPin = String(req.body?.pin || '').trim();
   if (!suppliedPin) return res.status(400).json({ success: false, error: 'PIN required.' });
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+  const nowMs = Date.now();
+  const attempts = ownerAuthAttempts.get(clientIp);
+  if (attempts && nowMs - attempts.windowStartedAt < OWNER_AUTH_WINDOW_MS && attempts.count >= OWNER_AUTH_MAX_ATTEMPTS) {
+    return res.status(429).json({ success: false, error: 'Too many PIN attempts. Try again in 15 minutes.' });
+  }
+  if (!attempts || nowMs - attempts.windowStartedAt >= OWNER_AUTH_WINDOW_MS) {
+    ownerAuthAttempts.set(clientIp, { count: 0, windowStartedAt: nowMs });
+  }
   const ownerPin = process.env.OWNER_PIN || await getVaultSecret('irzam_owner_pin');
   if (!ownerPin) return res.status(503).json({ success: false, error: 'Owner PIN is securely stored but server-side Supabase service-role access is not configured. Set SUPABASE_SERVICE_ROLE_KEY and SESSION_SECRET.' });
   if (suppliedPin !== ownerPin) {
+    const current = ownerAuthAttempts.get(clientIp) || { count: 0, windowStartedAt: nowMs };
+    ownerAuthAttempts.set(clientIp, { count: current.count + 1, windowStartedAt: current.windowStartedAt });
     addLog('SYSTEM', 'warn', 'Rejected invalid owner PIN attempt.');
     return res.status(401).json({ success: false, error: 'Invalid PIN.' });
   }
   if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) {
     return res.status(503).json({ success: false, error: 'Set a random SESSION_SECRET of at least 32 characters before signing in.' });
   }
+  ownerAuthAttempts.delete(clientIp);
   const expiresAt = String(Date.now() + 8 * 60 * 60 * 1000);
   const signature = signOwnerSession(expiresAt);
   const cookieParts = [`irzam_session=${encodeURIComponent(`${expiresAt}.${signature}`)}`, 'HttpOnly', 'SameSite=Strict', 'Path=/', 'Max-Age=28800'];
@@ -642,7 +659,9 @@ app.post('/api/auth/change-pin', (_req, res) => {
   return res.status(501).json({ success: false, error: 'PIN changes are disabled until the Vault secret-management workflow is enabled.' });
 });
 
-app.get('/api/status', (_req, res) => {
+app.get('/api/status', async (_req, res) => {
+  const vaultQwenKey = await getVaultSecret('irzam_freellmapi_key');
+  const vaultOwnerPin = await getVaultSecret('irzam_owner_pin');
   res.json({
     status: 'ok',
     appName: 'Irzam Studio',
@@ -650,7 +669,7 @@ app.get('/api/status', (_req, res) => {
     config: {
       freellmBaseUrl: config.freellmBaseUrl,
       selectedModel: config.selectedModel,
-      hasFreellmKey: Boolean(process.env.FREELLM_API_KEY),
+      hasFreellmKey: Boolean(process.env.FREELLM_API_KEY || vaultQwenKey),
       temperature: config.temperature,
       autoDeployDemos: false,
       netlifyConnected: false,
@@ -666,13 +685,15 @@ app.get('/api/status', (_req, res) => {
   });
 });
 
-app.get('/api/config', (_req, res) => {
+app.get('/api/config', async (_req, res) => {
+  const vaultQwenKey = await getVaultSecret('irzam_freellmapi_key');
+  const vaultOwnerPin = await getVaultSecret('irzam_owner_pin');
   return res.json({
     ownerPin: '',
-    ownerPinSet: Boolean(process.env.OWNER_PIN),
+    ownerPinSet: Boolean(process.env.OWNER_PIN || vaultOwnerPin),
     freellmApiKey: '',
     freellmApiKeyMasked: '',
-    hasKey: Boolean(process.env.FREELLM_API_KEY),
+    hasKey: Boolean(process.env.FREELLM_API_KEY || vaultQwenKey),
     freellmBaseUrl: config.freellmBaseUrl,
     selectedModel: config.selectedModel,
     temperature: config.temperature,
@@ -684,7 +705,7 @@ app.get('/api/config', (_req, res) => {
     googleOAuth: { clientId: '', clientSecret: '', connected: false, redirectUri: config.googleOAuth.redirectUri },
     supabase: { url: config.supabase.url, anonKey: '', connected: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY) },
     providerStatus: {
-      freellmApiKeyConfigured: Boolean(process.env.FREELLM_API_KEY),
+      freellmApiKeyConfigured: Boolean(process.env.FREELLM_API_KEY || vaultQwenKey),
       googleMapsApiKeyConfigured: Boolean(process.env.GOOGLE_MAPS_API_KEY),
       netlifyTokenConfigured: Boolean(process.env.NETLIFY_TOKEN),
       gmailOAuthConfigured: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
