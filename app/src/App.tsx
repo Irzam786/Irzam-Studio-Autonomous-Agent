@@ -103,7 +103,13 @@ export default function App() {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
     try {
       const saved = localStorage.getItem('irzam_chat_sessions');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const cleaned = parsed.filter((session: ChatSession) => session?.id !== 'session-apex-intel');
+          if (cleaned.length > 0) return cleaned;
+        }
+      }
     } catch (e) {
       console.error(e);
     }
@@ -314,6 +320,7 @@ export default function App() {
   };
 
   const handleLockTerminal = () => {
+    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
     sessionStorage.removeItem('irzam_authenticated');
     setIsAuthenticated(false);
   };
