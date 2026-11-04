@@ -11,6 +11,8 @@ React + Express workspace. The Express server serves the built Vite frontend and
 - AI chat uses the OpenAI-compatible FreeLLMAPI `/chat/completions` endpoint and Qwen model selection.
 - Google Places route calls the real Places API and filters for the minimum review count and a website.
 - Gmail OAuth/sending, scheduled jobs, automatic follow-ups, and Netlify deployments remain disabled until their real integrations are implemented and verified. The app must not show these as connected or claim messages were sent.
+- Leads, training rules/messages, campaigns, and outreach queue use server-side Supabase persistence. Reports, workflow history, demo records, and Gmail account metadata are read from Supabase.
+- Chat conversations remain in the browser's local storage for now; server-side chat-session persistence is not yet wired.
 - Dashboard operational records start empty; mock sample leads, Gmail accounts, reports, and demo URLs were removed.
 
 ## Required environment variables
