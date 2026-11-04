@@ -66,47 +66,13 @@ import {
 
 const INITIAL_SESSIONS: ChatSession[] = [
   {
-    id: 'session-apex-intel',
-    title: 'Apex Capital Institutional Demo',
-    createdAt: new Date(Date.now() - 3600000 * 4).toISOString(),
-    updatedAt: new Date(Date.now() - 3600000 * 4).toISOString(),
-    pinned: true,
-    messages: [
-      {
-        id: 'msg-1',
-        role: 'user',
-        content: 'Irzam Studio: Deploy a dark institutional treasury prototype for Apex Capital Partners with real-time portfolio metrics.',
-        timestamp: new Date(Date.now() - 3600000 * 4).toISOString(),
-      },
-      {
-        id: 'msg-2',
-        role: 'assistant',
-        content: `Irzam Studio Operative Dispatch: Apex Capital Partners prototype compiled and deployed live.
-
-Architecture Summary:
-- Obsidian Aesthetic: #050507 obsidian background with crisp white typography.
-- Treasury Allocation: Liquid Staking (45%), Arbitrage Desk (35%), US T-Bills (20%).
-- Live Edge Deployment: Netlify-compatible static demo live for partner review.`,
-        timestamp: new Date(Date.now() - 3600000 * 3.9).toISOString(),
-        modelUsed: 'Qwen 2.5 Coder 32B',
-        deployedDemo: {
-          id: 'demo-apex-wealth',
-          slug: 'apex-capital-portfolio',
-          title: 'Apex Wealth & Institutional Treasury',
-          clientName: 'Apex Capital Partners',
-          createdAt: new Date(Date.now() - 3600000 * 4).toISOString(),
-          expiresAt: new Date(Date.now() + 3600000 * 44).toISOString(),
-          framework: 'Tailwind + Alpine.js',
-          status: 'active',
-          views: 78,
-          previewUrl: '/demo/demo-apex-wealth',
-          deployTarget: 'edge_sandbox',
-          liveNetlifyUrl: 'https://apex-portfolio.netlify.app',
-          htmlContent: `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Apex Wealth</title><script src="https://cdn.tailwindcss.com"></script></head><body class="bg-[#050507] text-white p-8"><h1 class="text-3xl font-extrabold">Apex Capital Institutional</h1><p class="text-zinc-400">Algorithmic Treasury & Risk Engine</p></body></html>`
-        }
-      }
-    ]
-  }
+    id: 'session-new',
+    title: 'New conversation',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    pinned: false,
+    messages: [],
+  },
 ];
 
 export default function App() {
@@ -145,7 +111,7 @@ export default function App() {
   });
 
   const [activeSessionId, setActiveSessionId] = useState<string>(() => {
-    return sessions[0]?.id || 'session-apex-intel';
+    return sessions[0]?.id || 'session-new';
   });
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -157,13 +123,13 @@ export default function App() {
   const [cronStatus, setCronStatus] = useState<CronStatus | null>(null);
 
   const [config, setConfig] = useState<SystemConfig>({
-    ownerPin: '1818',
+    ownerPin: '',
     freellmApiKey: '',
     freellmBaseUrl: 'https://api.freellmapi.com/v1',
     selectedModel: 'Qwen 3.8 Max',
     temperature: 0.7,
     systemPrompt: 'You are Irzam Studio, an executive AI agent platform...',
-    autoDeployDemos: true,
+    autoDeployDemos: false,
     replyWatcherIntervalMinutes: 60,
     soundAlerts: true,
     netlify: {
@@ -181,7 +147,7 @@ export default function App() {
     supabase: {
       url: DEFAULT_SUPABASE_URL,
       anonKey: DEFAULT_SUPABASE_ANON_KEY,
-      connected: true,
+      connected: false,
     }
   });
 
@@ -601,6 +567,10 @@ export default function App() {
     try {
       const res = await fetch(`/api/gmail/oauth/auth-url?redirectOrigin=${encodeURIComponent(window.location.origin)}`);
       const data = await res.json();
+      if (!res.ok || !data.authUrl) {
+        showNotification(data.error || 'Gmail OAuth is not enabled yet.', 'warn');
+        return;
+      }
       const width = 560;
       const height = 660;
       const left = Math.round(window.screen.width / 2 - width / 2);
