@@ -3,10 +3,7 @@ name: Build Irzam Studio AI Studio ZIP
 on:
   push:
     branches:
-      - ai-studio-app-2026-11
-    paths:
-      - "app/**"
-      - ".github/workflows/ai-studio-zip.yml"
+      - ai-studio-import-ready
   workflow_dispatch:
 
 permissions:
@@ -16,55 +13,25 @@ jobs:
   build-and-package:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source branch
+      - name: Checkout import-ready branch
         uses: actions/checkout@v4
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Install dependencies
-        working-directory: app
         run: npm install
-
       - name: TypeScript validation
-        working-directory: app
         run: npm run lint
-
-      - name: Production frontend build
-        working-directory: app
+      - name: Build frontend
         run: npm run build
-
-      - name: Create AI Studio import package
+      - name: Create clean source ZIP
         run: |
-          mkdir -p package/irzam-studio
-          rsync -a --exclude='node_modules' --exclude='dist' --exclude='.env' --exclude='.env.*' app/ package/irzam-studio/
-          cp app/.env.example package/irzam-studio/.env.example
-          cat > package/irzam-studio/AI_STUDIO_IMPORT.txt <<'EOF'
-          IRZAM STUDIO - GOOGLE AI STUDIO BUILD IMPORT
-
-          This archive contains the app project at its root folder.
-
-          IMPORTANT:
-          Google AI Studio Build currently imports existing code through:
-          Build mode > Add files (+) > Import from GitHub.
-          The ZIP is a source backup/package; the Google-hosted ai.studio publishing flow is completed inside AI Studio.
-
-          Runtime:
-          - Node.js server (Express) plus Vite React frontend
-          - Build: npm install && npm run build
-          - Start: npm start
-          - Required server-side secrets: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SESSION_SECRET
-          - Optional provider secrets: FREELLM_API_KEY, GOOGLE_MAPS_API_KEY
-
-          Never put real credentials in this ZIP or in client-side code. Configure secrets in the AI Studio server-side Secrets panel/runtime.
-
-          Gmail OAuth/send, Netlify deployments, scheduled jobs, and automated follow-ups remain disabled in this code until real integrations are implemented and tested.
-          EOF
-          cd package
-          zip -qr ../Irzam-Studio-AI-Studio-Import.zip irzam-studio
-
+          mkdir -p "$RUNNER_TEMP/irzam-studio"
+          rsync -a --exclude='node_modules' --exclude='dist' --exclude='.git' --exclude='.env' --exclude='.env.*' ./ "$RUNNER_TEMP/irzam-studio/"
+          cp .env.example "$RUNNER_TEMP/irzam-studio/.env.example"
+          cd "$RUNNER_TEMP"
+          zip -qr "$GITHUB_WORKSPACE/Irzam-Studio-AI-Studio-Import.zip" irzam-studio
       - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
         with:
