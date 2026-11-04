@@ -13,7 +13,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -1237,17 +1237,17 @@ function isLightInteraction(message: string, attachmentsCount: number): string |
   if (attachmentsCount > 0) return null;
   const text = (message || '').trim().toLowerCase();
   if (text.length > 70) return null;
-  if (/^(hi|hello|hey|yo|greetings|hola|good\\s*(morning|afternoon|evening|day)|sup)\\b[!.?]*$/i.test(text)) {
+  if (/^(hi|hello|hey|yo|greetings|hola|good\s*(morning|afternoon|evening|day)|sup)\b[!.?]*$/i.test(text)) {
     return `### Irzam Studio Workspace Ready
 
 The dashboard is available. AI, research, email and deployment providers must pass real connection checks before they can be used. What would you like to prepare?`;
   }
-  if (/^(who\\s*are\\s*you|what\\s*can\\s*you\\s*do|what\\s*is\\s*irzam\\s*studio|help)\\b[!.?]*$/i.test(text)) {
+  if (/^(who\s*are\s*you|what\s*can\s*you\s*do|what\s*is\s*irzam\s*studio|help)\b[!.?]*$/i.test(text)) {
     return `### Irzam Studio
 
 A workspace for verified prospect research, contact discovery, personalized outreach, inbox handling and temporary client demos. Provider integrations remain unavailable until configured and verified.`;
   }
-  if (/^(status|system\\s*status|health|ping|are\\s*you\\s*(online|there|alive|ready))\\b[!.?]*$/i.test(text)) {
+  if (/^(status|system\s*status|health|ping|are\s*you\s*(online|there|alive|ready))\b[!.?]*$/i.test(text)) {
     return `### Irzam Studio Service Status
 
 - Workspace API: running
@@ -1271,7 +1271,7 @@ async function generateQwenCompletion(
 ): Promise<{ content: string; model: string }> {
   const apiKey = process.env.FREELLM_API_KEY || await getVaultSecret('irzam_freellmapi_key');
   if (!apiKey) throw new Error('FreeLLMAPI key is not configured.');
-  const base = (process.env.FREELLM_BASE_URL || config.freellmBaseUrl).replace(/\\/+$/, '').replace(/\\/chat\\/completions$/, '');
+  const base = (process.env.FREELLM_BASE_URL || config.freellmBaseUrl).replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
   const model = process.env.QWEN_MODEL || requestedModel || config.selectedModel;
   const messages = [
     { role: 'system', content: buildEnrichedSystemPrompt() },
@@ -1319,7 +1319,7 @@ app.post('/api/chat/stream', async (req, res) => {
   if (res.flushHeaders) res.flushHeaders();
   let aborted = false;
   req.on('close', () => { aborted = true; });
-  const send = (event: string, data: any) => { if (!aborted && !res.writableEnded) res.write(`event: ${event}\\ndata: ${JSON.stringify(data)}\\n\\n`); };
+  const send = (event: string, data: any) => { if (!aborted && !res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
   const { message, history = [], model, autoRoute } = req.body || {};
   try {
     send('stage', { stage: 'receiving', label: 'Receiving message...' });
