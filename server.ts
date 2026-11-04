@@ -1276,7 +1276,7 @@ async function generateQwenCompletion(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ model, messages, temperature: config.temperature, max_tokens: 4096, stream: false }),
-    signal: AbortSignal.timeout(90000),
+    signal: AbortSignal.timeout(process.env.IRZAM_NETLIFY_FUNCTION ? 55000 : 90000),
   });
   if (!response.ok) throw new Error(`FreeLLMAPI returned HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`);
   const payload = await response.json() as any;
