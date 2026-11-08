@@ -8,6 +8,13 @@ import {
   disconnectProvider,
   testProviderConnection
 } from './services/connectors';
+import {
+  generateGoogleAuthUrl,
+  exchangeOAuthCode,
+  scanInboxForReplies,
+  sendGmailEmail
+} from './services/gmail';
+import { createAndDeployDemo } from './services/demos';
 
 dotenv.config();
 
@@ -1056,15 +1063,68 @@ app.post('/api/research/run-pipeline', (_req, res) => {
 });
 
 // ==========================================
-// INBOX & AI REPLY AGENT (Phase 14)
+// GOOGLE WORKSPACE GMAIL OAUTH & INBOX (Phase 3)
 // ==========================================
 
-app.get('/api/inbox/replies', (req, res) => {
-  res.json({ replies: detectedReplies });
+app.get('/api/gmail/oauth/auth-url', (req, res) => {
+  try {
+    const redirectOrigin = String(req.query.redirectOrigin || '');
+    const authUrl = generateGoogleAuthUrl(redirectOrigin);
+    return res.json({ success: true, authUrl });
+  } catch (err: any) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
 });
 
-app.post('/api/inbox/scan', (_req, res) => {
-  return res.status(503).json({ success: false, replies: [], error: 'Real Gmail OAuth is not configured. No inbox was scanned.' });
+app.get('/oauth/callback', async (req, res) => {
+  const code = String(req.query.code || '');
+  if (!code) {
+    return res.status(400).send('<h3>Authorization failed: no code provided.</h3>');
+  }
+  try {
+    const result = await exchangeOAuthCode(code);
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>Gmail Authorized</title></head>
+        <body style="background:#09090b;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+          <div style="text-align:center;padding:24px;border:1px solid rgba(255,255,255,0.1);border-radius:12px;background:#18181b;">
+            <h2 style="color:#22c55e;">✦ Google Workspace Authorized</h2>
+            <p style="color:#a1a1aa;">Connected: <strong>${result.email}</strong></p>
+            <p style="font-size:12px;color:#71717a;">Closing window and refreshing dashboard...</p>
+          </div>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'GMAIL_OAUTH_SUCCESS', email: '${result.email}' }, '*');
+            }
+            setTimeout(() => window.close(), 1500);
+          </script>
+        </body>
+      </html>
+    `);
+  } catch (err: any) {
+    return res.status(500).send(`<h3>OAuth Error: ${err.message}</h3>`);
+  }
+});
+
+app.get('/api/inbox/replies', async (_req, res) => {
+  const db = getDb();
+  try {
+    const { data } = await db.from('inbox_replies').select('*').order('received_at', { ascending: false });
+    return res.json({ replies: data || detectedReplies });
+  } catch {
+    return res.json({ replies: detectedReplies });
+  }
+});
+
+app.post('/api/inbox/scan', async (_req, res) => {
+  try {
+    const replies = await scanInboxForReplies();
+    addLog('GMAIL', 'success', `Scanned inbox and processed ${replies.length} replies.`);
+    return res.json({ success: true, replies });
+  } catch (err: any) {
+    return res.status(503).json({ success: false, replies: [], error: err.message });
+  }
 });
 
 app.post('/api/inbox/replies/:id/generate-response', async (req, res) => {
@@ -1087,87 +1147,105 @@ app.post('/api/inbox/replies/:id/generate-response', async (req, res) => {
   res.json({ success: true, suggestedResponse: responseText });
 });
 
-app.post('/api/inbox/replies/:id/send-response', (_req, res) => {
-  return res.status(503).json({ success: false, error: 'Gmail OAuth is not configured. No reply was sent.' });
+app.post('/api/inbox/replies/:id/send-response', async (req, res) => {
+  const { id } = req.params;
+  const db = getDb();
+  try {
+    const { data: reply } = await db.from('inbox_replies').select('*').eq('id', id).single();
+    if (!reply) return res.status(404).json({ success: false, error: 'Reply record not found.' });
+    const responseText = String(req.body.responseText || reply.suggested_response || '');
+    if (!responseText) return res.status(400).json({ success: false, error: 'Response text is required.' });
+
+    const sendResult = await sendGmailEmail(
+      reply.from_email,
+      `Re: ${reply.subject || 'Follow-up'}`,
+      responseText,
+      reply.thread_id
+    );
+
+    await db.from('inbox_replies').update({
+      status: 'responded',
+      suggested_response: responseText,
+      updated_at: new Date().toISOString()
+    }).eq('id', id);
+
+    addLog('AGENT', 'success', `Dispatched reply to ${reply.from_email}`);
+    return res.json({ success: true, messageId: sendResult.messageId });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ==========================================
-// DAILY REPORTS (Phase 15)
+// DAILY REPORTS (Phase 4)
 // ==========================================
 
 app.get('/api/reports', async (_req, res) => {
-  const db = getSupabaseServerClient();
-  if (!db) return res.status(503).json({ reports: [], error: 'Server-side Supabase service-role access is not configured.' });
-  const { data, error } = await db.from('daily_reports').select('*').order('generated_at_pkt', { ascending: false });
-  if (error) return res.status(502).json({ reports: [], error: error.message });
-  return res.json({ reports: data || [] });
+  const db = getDb();
+  try {
+    const { data, error } = await db.from('daily_reports').select('*').order('generated_at_pkt', { ascending: false });
+    if (error) return res.status(502).json({ reports: [], error: error.message });
+    return res.json({ reports: data || [] });
+  } catch (err: any) {
+    return res.status(503).json({ reports: [], error: err.message });
+  }
 });
 
 app.post('/api/reports/generate', async (_req, res) => {
-  const db = getSupabaseServerClient();
-  if (!db) return res.status(503).json({ error: 'Database not configured.' });
-  const now = new Date();
-  const todayStr = now.toISOString().slice(0, 10);
-  const [leadsRes, queueRes, repliesRes, demosRes] = await Promise.all([
-    db.from('leads').select('id, google_reviews_count, email_verified', { count: 'exact' }),
-    db.from('outreach_queue').select('id, status, followup_stage', { count: 'exact' }),
-    db.from('inbox_replies').select('id, intent, suggested_response', { count: 'exact' }),
-    db.from('client_demos').select('id', { count: 'exact' }),
-  ]);
-  const leads = leadsRes.data || [];
-  const queue = queueRes.data || [];
-  const replies = repliesRes.data || [];
-  const report = {
-    id: randomUUID(),
-    report_date: todayStr,
-    generated_at_pkt: now.toISOString(),
-    researched_count: leads.length,
-    qualified_count: leads.filter((l: any) => Number(l.google_reviews_count || 0) >= 50).length,
-    google_reviews_checked: leads.reduce((acc: number, l: any) => acc + (Number(l.google_reviews_count) || 0), 0),
-    emails_discovered: leads.filter((l: any) => Boolean(l.email)).length,
-    emails_verified: leads.filter((l: any) => l.email_verified === true).length,
-    emails_scheduled: queue.filter((q: any) => q.status === 'scheduled').length,
-    emails_sent: queue.filter((q: any) => q.status === 'sent').length,
-    failed_attempts: queue.filter((q: any) => q.status === 'failed').length,
-    followups_sent: queue.filter((q: any) => Number(q.followup_stage || 0) > 0).length,
-    replies_received: replies.length,
-    responses_generated: replies.filter((r: any) => Boolean(r.suggested_response)).length,
-    demos_generated: demosRes.count || 0,
-    status: 'completed',
-    summary_text: `Irzam Studio Executive Operational Brief for ${todayStr}. Total verified prospects: ${leads.length}. Scheduled outreach: ${queue.length}. Inbound replies: ${replies.length}.`,
-  };
-  const { data, error } = await db.from('daily_reports').insert(report).select('*').single();
-  if (error) return res.status(502).json({ error: error.message });
-  return res.json({ success: true, report: data });
+  const db = getDb();
+  try {
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    const [leadsRes, queueRes, repliesRes, demosRes] = await Promise.all([
+      db.from('leads').select('id, google_reviews_count, email_verified', { count: 'exact' }),
+      db.from('outreach_queue').select('id, status, followup_stage', { count: 'exact' }),
+      db.from('inbox_replies').select('id, intent, suggested_response', { count: 'exact' }),
+      db.from('client_demos').select('id', { count: 'exact' }),
+    ]);
+    const leads = leadsRes.data || [];
+    const queue = queueRes.data || [];
+    const replies = repliesRes.data || [];
+    const report = {
+      id: randomUUID(),
+      report_date: todayStr,
+      generated_at_pkt: now.toISOString(),
+      researched_count: leads.length,
+      qualified_count: leads.filter((l: any) => Number(l.google_reviews_count || 0) >= 50).length,
+      google_reviews_checked: leads.reduce((acc: number, l: any) => acc + (Number(l.google_reviews_count) || 0), 0),
+      emails_discovered: leads.filter((l: any) => Boolean(l.email)).length,
+      emails_verified: leads.filter((l: any) => l.email_verified === true).length,
+      emails_scheduled: queue.filter((q: any) => q.status === 'scheduled').length,
+      emails_sent: queue.filter((q: any) => q.status === 'sent').length,
+      failed_attempts: queue.filter((q: any) => q.status === 'failed').length,
+      followups_sent: queue.filter((q: any) => Number(q.followup_stage || 0) > 0).length,
+      replies_received: replies.length,
+      responses_generated: replies.filter((r: any) => Boolean(r.suggested_response)).length,
+      demos_generated: demosRes.count || 0,
+      status: 'completed',
+      summary_text: `Irzam Studio Executive Operational Brief for ${todayStr}. Total verified prospects: ${leads.length}. Scheduled outreach: ${queue.length}. Inbound replies: ${replies.length}.`,
+    };
+    const { data, error } = await db.from('daily_reports').insert(report).select('*').single();
+    if (error) return res.status(502).json({ error: error.message });
+    return res.json({ success: true, report: data });
+  } catch (err: any) {
+    return res.status(503).json({ error: err.message });
+  }
 });
 
+// ==========================================
+// CLIENT DEMOS & NETLIFY DEPLOYMENT (Phase 4)
+// ==========================================
+
 app.post('/api/demos', async (req, res) => {
-  const db = getSupabaseServerClient();
-  if (!db) return res.status(503).json({ error: 'Database access not configured.' });
-  const { title, clientName, htmlContent, framework, deployTarget } = req.body || {};
+  const { title, clientName, htmlContent, framework } = req.body || {};
   if (!title || !htmlContent) return res.status(400).json({ error: 'Title and htmlContent are required.' });
-  const slug = `demo-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
-  const now = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  const record = {
-    id: randomUUID(),
-    title: String(title).trim(),
-    client_name: String(clientName || 'Prospect').trim(),
-    slug,
-    html_content: String(htmlContent),
-    framework: framework || 'HTML5',
-    deploy_target: deployTarget || 'netlify',
-    preview_url: `/demo/${slug}`,
-    live_url: `/demo/${slug}`,
-    status: 'active',
-    views: 0,
-    created_at: now,
-    expires_at: expiresAt,
-  };
-  const { data, error } = await db.from('client_demos').insert(record).select('*').single();
-  if (error) return res.status(502).json({ error: error.message });
-  addLog('HOSTING', 'info', `Created client demo: ${record.title} (${record.preview_url})`);
-  return res.json({ success: true, demo: data });
+  try {
+    const demo = await createAndDeployDemo(title, clientName, htmlContent, framework);
+    addLog('HOSTING', 'info', `Created client demo: ${demo.title} (${demo.live_url})`);
+    return res.json({ success: true, demo });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.delete('/api/demos/:id', async (req, res) => {
