@@ -23,6 +23,7 @@ import {
   Layers,
   Sparkles
 } from 'lucide-react';
+import { ProviderLogo } from './ProviderLogos';
 import { ConnectorInfo, ConnectorCategory } from '../types';
 
 interface ConnectorsViewProps {
@@ -113,30 +114,11 @@ export const ConnectorsView: React.FC<ConnectorsViewProps> = ({
 
   // Provider authentic logo renderer
   const renderProviderIcon = (provider: string) => {
-    switch (provider) {
-      case 'freellmapi':
-        return <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/25 flex items-center justify-center text-purple-400 font-bold font-mono">QW</div>;
-      case 'supabase':
-        return <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/25 flex items-center justify-center text-emerald-400 font-bold font-mono">SB</div>;
-      case 'google_workspace':
-        return <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/25 flex items-center justify-center text-red-400 font-bold font-mono">GM</div>;
-      case 'netlify':
-        return <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/25 flex items-center justify-center text-cyan-400 font-bold font-mono">NL</div>;
-      case 'google_places':
-        return <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/25 flex items-center justify-center text-blue-400 font-bold font-mono">GP</div>;
-      case 'open_places':
-        return <div className="w-10 h-10 rounded-xl bg-teal-500/10 border border-teal-500/25 flex items-center justify-center text-teal-400 font-bold font-mono">OP</div>;
-      case 'tavily':
-        return <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-center text-amber-400 font-bold font-mono">TV</div>;
-      case 'you_mcp':
-        return <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/25 flex items-center justify-center text-indigo-400 font-bold font-mono">YU</div>;
-      case 'hunter':
-        return <div className="w-10 h-10 rounded-xl bg-orange-500/10 border border-orange-500/25 flex items-center justify-center text-orange-400 font-bold font-mono">HN</div>;
-      case 'prospeo':
-        return <div className="w-10 h-10 rounded-xl bg-pink-500/10 border border-pink-500/25 flex items-center justify-center text-pink-400 font-bold font-mono">PS</div>;
-      default:
-        return <div className="w-10 h-10 rounded-xl bg-zinc-800 border border-white/10 flex items-center justify-center text-white"><Plug className="w-5 h-5" /></div>;
-    }
+    return (
+      <div className="w-10 h-10 rounded-xl bg-white/[0.04] border border-white/10 flex items-center justify-center p-2 shadow-inner">
+        <ProviderLogo provider={provider} className="w-6 h-6 flex-shrink-0" />
+      </div>
+    );
   };
 
   return (
