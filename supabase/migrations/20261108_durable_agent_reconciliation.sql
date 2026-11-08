@@ -68,15 +68,15 @@ CREATE TABLE IF NOT EXISTS public.agent_memories (
 CREATE INDEX IF NOT EXISTS idx_agent_memories_cat ON public.agent_memories (category, is_active);
 
 -- 5. Seed Core Agent Schedules (Idempotent)
-INSERT INTO public.agent_schedules (schedule_key, workflow_type, enabled, interval_minutes, timezone, settings)
+INSERT INTO public.agent_schedules (schedule_key, workflow_type, enabled, interval_minutes, timezone, next_run_at, settings)
 VALUES
-    ('agent_wake_cycle', 'agent_wake_cycle', true, 30, 'Asia/Karachi', '{"description": "Autonomous worker wake cycle"}'::jsonb),
-    ('inbox_watcher_hourly', 'inbox_watcher_hourly', true, 60, 'Asia/Karachi', '{"description": "Hourly Gmail inbox sync and reply parser"}'::jsonb),
-    ('daily_lead_discovery', 'daily_lead_discovery', true, 1440, 'Asia/Karachi', '{"target_time_pkt": "17:00", "daily_target": 10, "min_reviews": 50}'::jsonb),
-    ('outreach_slot_dispatch', 'outreach_slot_dispatch', true, 30, 'Asia/Karachi', '{"slots_pkt": ["18:00", "18:30", "19:00", "19:30"]}'::jsonb),
-    ('followup_processor', 'followup_processor', true, 120, 'Asia/Karachi', '{"max_attempts": 2, "days_between": 3}'::jsonb),
-    ('daily_report', 'daily_report', true, 1440, 'Asia/Karachi', '{"target_time_pkt": "22:00"}'::jsonb),
-    ('memory_maintenance', 'memory_maintenance', true, 720, 'Asia/Karachi', '{"compact_threshold_turns": 40}'::jsonb)
+    ('agent_wake_cycle', 'agent_wake_cycle', true, 30, 'Asia/Karachi', now(), '{"description": "Autonomous worker wake cycle"}'::jsonb),
+    ('inbox_watcher_hourly', 'inbox_watcher_hourly', true, 60, 'Asia/Karachi', now(), '{"description": "Hourly Gmail inbox sync and reply parser"}'::jsonb),
+    ('daily_lead_discovery', 'daily_lead_discovery', true, 1440, 'Asia/Karachi', now(), '{"target_time_pkt": "17:00", "daily_target": 10, "min_reviews": 50}'::jsonb),
+    ('outreach_slot_dispatch', 'outreach_slot_dispatch', true, 30, 'Asia/Karachi', now(), '{"slots_pkt": ["18:00", "18:30", "19:00", "19:30"]}'::jsonb),
+    ('followup_processor', 'followup_processor', true, 120, 'Asia/Karachi', now(), '{"max_attempts": 2, "days_between": 3}'::jsonb),
+    ('daily_report', 'daily_report', true, 1440, 'Asia/Karachi', now(), '{"target_time_pkt": "22:00"}'::jsonb),
+    ('memory_maintenance', 'memory_maintenance', true, 720, 'Asia/Karachi', now(), '{"compact_threshold_turns": 40}'::jsonb)
 ON CONFLICT (schedule_key) DO UPDATE
 SET updated_at = now();
 
