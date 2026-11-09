@@ -5,6 +5,21 @@ from typing import Any, Dict, List, Optional
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
+def _gemini_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert JSON Schema primitive types to Gemini's uppercase schema enum."""
+    result = {}
+    for key, value in schema.items():
+        if key == "type" and isinstance(value, str):
+            result[key] = value.upper()
+        elif key == "properties" and isinstance(value, dict):
+            result[key] = {name: _gemini_schema(item) for name, item in value.items()}
+        elif key == "items" and isinstance(value, dict):
+            result[key] = _gemini_schema(value)
+        else:
+            result[key] = value
+    return result
+
+
 class GoogleGemini:
     """Gemini adapter supporting native function declarations and function-call results."""
 
@@ -38,7 +53,7 @@ class GoogleGemini:
                 {
                     "name": item.get("name"),
                     "description": item.get("description", ""),
-                    "parameters": item.get("parameters", {"type": "OBJECT", "properties": {}}),
+                    "parameters": _gemini_schema(item.get("parameters", {"type": "object", "properties": {}})),
                 }
                 for item in tools if item.get("name")
             ]
