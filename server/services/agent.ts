@@ -348,7 +348,20 @@ export async function runAgentChat(
   const base = (process.env.FREELLM_BASE_URL || 'https://api.freellmapi.com/v1').replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
   const model = process.env.QWEN_MODEL || requestedModel || 'qwen-max';
   const messages: ChatMessage[] = [
-    { role: 'system', content: systemPrompt },
+    {
+      role: 'system',
+      content: `${systemPrompt}
+
+AUTONOMOUS TOOL POLICY:
+- Use search_businesses_google_places when current, real business listings are required.
+- Use research_business_web when official website/contact/leadership facts are needed.
+- Use find_email_hunter or find_email_prospeo for a requested company-domain contact.
+- Use discover_and_save_leads when asked to find, collect, or save leads; it stores only genuine Google Places businesses and marks an email sendable only after provider verification.
+- Never invent email addresses, business records, or contact names.
+- You may use only the listed tools. Do not send email, perform follow-ups, change outreach status, or deploy websites with tools.
+- If the user asks for an action outside the available tools, explain the limitation clearly.
+`,
+    },
     ...history.filter(item => (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
       .slice(-12).map(item => ({ role: item.role as 'user' | 'assistant', content: String(item.content).slice(0, 12000) })),
     { role: 'user', content: message.slice(0, 12000) },
@@ -368,7 +381,6 @@ export async function runAgentChat(
         goal: message.slice(0, 4000),
         workflow_type: 'interactive_chat',
         status: 'running',
-        thread_id: undefined,
         state: { provider: 'freellm_qwen', model },
         checkpoint: { tools_used: [] },
       });
