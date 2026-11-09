@@ -3,10 +3,13 @@ from typing import Any, Dict, List, Optional
 from supabase import create_client
 
 
+from agent.config import SUPABASE_URL, SUPABASE_KEY
+
+
 class SupabaseStore:
     def __init__(self):
-        url = os.environ.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        url = SUPABASE_URL
+        key = SUPABASE_KEY
         self.client = create_client(url, key) if url and key else None
 
     def list_due_schedules(self):
