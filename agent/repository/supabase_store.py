@@ -21,8 +21,20 @@ class SupabaseStore:
     def list_due_jobs(self, limit: int = 10):
         if not self.client:
             return []
-        res = self.client.table("agent_job_queue").select("*").in_("status", ["pending", "failed"]).lte("next_attempt_at", "now()").order("priority", desc=True).limit(limit).execute()
-        return res.data or []
+        try:
+            # 1. Try RPC claim/list
+            rpc_res = self.client.rpc("claim_agent_jobs", {"p_worker_id": "worker", "p_limit": limit}).execute()
+            if rpc_res.data:
+                return rpc_res.data
+        except Exception:
+            pass
+        # 2. Resilient fallback query
+        try:
+            res = self.client.table("agent_job_queue").select("*").in_("status", ["pending", "failed"]).limit(limit).execute()
+            return res.data or []
+        except Exception as e:
+            print(f"agent_job_queue query notice: {e}")
+            return []
 
     def claim_job(self, job_id: str, worker_id: str):
         if not self.client:
