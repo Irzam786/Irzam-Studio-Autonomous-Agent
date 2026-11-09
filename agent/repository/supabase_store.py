@@ -158,9 +158,22 @@ class SupabaseStore:
             return None
         try:
             if lead_data.get("google_place_id"):
-                res = self.client.table("leads").upsert(lead_data, on_conflict="google_place_id").execute()
+                # Never overwrite a previously verified email with a later empty/unverified discovery.
+                existing_res = (
+                    self.client.table("leads")
+                    .select("email,email_verified,email_source")
+                    .eq("google_place_id", lead_data["google_place_id"])
+                    .limit(1)
+                    .execute()
+                )
+                existing_rows = existing_res.data or []
+                if existing_rows and existing_rows[0].get("email_verified") is True and not lead_data.get("email_verified"):
+                    lead_data["email"] = existing_rows[0].get("email")
+                    lead_data["email_verified"] = True
+                    lead_data["email_source"] = existing_rows[0].get("email_source")
+                res = self.client.table("leads").upsert(lead_data, on_conflict="google_place_id").select("*").execute()
             else:
-                res = self.client.table("leads").insert(lead_data).execute()
+                res = self.client.table("leads").insert(lead_data).select("*").execute()
             return res.data[0] if res and res.data else None
         except Exception as e:
             print(f"[SupabaseStore] save_lead note: {e}")
