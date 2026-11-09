@@ -971,10 +971,10 @@ app.get('/api/connectors', async (_req, res) => {
 
 app.post('/api/connectors/:id', async (req, res) => {
   const { id } = req.params;
-  const { apiKey, token, credentials, config } = req.body || {};
-  const secret = apiKey || token || credentials || '';
+  const { apiKey, token, credentials, credential, config, enabledForAgent } = req.body || {};
+  const secret = apiKey || token || credentials || credential || '';
   try {
-    const result = await connectProvider(id, secret, config);
+    const result = await connectProvider(id, secret, config, enabledForAgent !== false);
     return res.json(result);
   } catch (error: any) {
     return res.status(400).json({ success: false, error: error.message });
@@ -983,10 +983,10 @@ app.post('/api/connectors/:id', async (req, res) => {
 
 app.post('/api/connectors/:id/connect', async (req, res) => {
   const { id } = req.params;
-  const { apiKey, token, credentials, config } = req.body || {};
-  const secret = apiKey || token || credentials || '';
+  const { apiKey, token, credentials, credential, config, enabledForAgent } = req.body || {};
+  const secret = apiKey || token || credentials || credential || '';
   try {
-    const result = await connectProvider(id, secret, config);
+    const result = await connectProvider(id, secret, config, enabledForAgent !== false);
     return res.json(result);
   } catch (error: any) {
     return res.status(400).json({ success: false, error: error.message });
