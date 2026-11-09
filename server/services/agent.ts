@@ -376,7 +376,7 @@ AUTONOMOUS TOOL POLICY:
     if (taskPersisted) return;
     try {
       taskDb = getDb();
-      const { error } = await taskDb.from('agent_tasks').insert({
+      const { error } = await (taskDb as any).from('agent_tasks').insert({
         id: taskId,
         goal: message.slice(0, 4000),
         workflow_type: 'interactive_chat',
