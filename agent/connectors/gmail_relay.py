@@ -2,6 +2,7 @@ import os
 import base64
 import requests
 from email.mime.text import MIMEText
+from email.utils import parseaddr
 from typing import Dict, Any, List, Optional
 
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -86,12 +87,16 @@ def scan_gmail_replies(access_token: str, query: str = "label:INBOX") -> List[Di
             headers_list = detail.get("payload", {}).get("headers", [])
             header_map = {h.get("name", "").lower(): h.get("value", "") for h in headers_list}
 
+            from_name, from_email = parseaddr(header_map.get("from", ""))
+            snippet = detail.get("snippet", "") or ""
             results.append({
-                "message_id": msg_id,
+                "gmail_message_id": msg_id,
                 "thread_id": detail.get("threadId"),
-                "sender": header_map.get("from", ""),
+                "from_name": from_name or "Prospect",
+                "from_email": from_email.strip().lower(),
                 "subject": header_map.get("subject", ""),
-                "snippet": detail.get("snippet", ""),
+                "snippet": snippet,
+                "intent": classify_reply_intent(snippet),
                 "received_at": header_map.get("date", "")
             })
 
