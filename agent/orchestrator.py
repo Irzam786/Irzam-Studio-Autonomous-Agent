@@ -61,7 +61,11 @@ class Orchestrator:
             return self._handle_followup_processor(payload)
         elif workflow_type == "daily_report":
             return self._handle_daily_report(payload)
-undefinedundefined
+        elif workflow_type == "agent_wake_cycle":
+            return self._handle_agent_wake_cycle(payload)
+        elif workflow_type == "agent_task":
+            return self._handle_agent_task(payload)
+
         return {"status": "ok", "summary": f"Generic workflow {workflow_type} acknowledged.", "items_processed": 0}
 
     def _handle_daily_lead_discovery(self, payload: Dict[str, Any]) -> Dict[str, Any]:
