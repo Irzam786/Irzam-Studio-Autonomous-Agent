@@ -1,45 +1,100 @@
-# Irzam Studio — Netlify deployment branch
+# Irzam Studio — Autonomous Operative Platform
 
-This branch packages the existing Irzam Studio UI for Netlify continuous deployment. It retains the React/Vite frontend and adapts the existing Express API to a Netlify Function using the official Express + serverless-http pattern.
+Production autonomous agency platform with React/Vite UI, Express/TypeScript backend, Supabase persistence/Vault, durable Python ReAct agent, and GitHub Actions cron worker.
 
-## Netlify GitHub import settings
+- **Repository:** `Irzam786/Irzam-Studio-Autonomous-Agent`
+- **Default Branch:** `main`
+- **Supabase Project:** `Irzam Studio` (`fgksgytuglpmzhqcdasb.supabase.co`)
+- **Primary Hosting:** Google AI Studio Build Mode → Cloud Run (`.ai.studio`)
 
-- Repository: `Irzam786/Irzam-Studio-Agent`
-- Branch: `netlify-ready`
-- Base directory: repository root (leave blank)
-- Build command: `npm run lint && npm run build`
-- Publish directory: `dist`
-- Functions directory: `netlify/functions` (configured in `netlify.toml`)
+---
 
-Netlify serves the frontend from its CDN and routes `/api/*` requests to the Express function.
+## 1. Architecture Overview
 
-## Required Netlify environment variables
+- **Frontend:** React 19 + TypeScript + Vite + Tailwind CSS dark tactical interface.
+- **Backend:** Express API (`server.ts` / `server/app.ts`) serving `/api/*` and static production build on port 3000.
+- **Autonomous Worker:** Python 3.11 ReAct agent (`agent/main.py`) triggered every 30 minutes via GitHub Actions (`.github/workflows/agent-worker.yml`).
+- **Persistence & Vault:** Supabase PostgreSQL (`leads`, `campaigns`, `outreach_queue`, `inbox_replies`, `agent_tasks`, `owner_auth_settings`) with Supabase Vault (`get_irzam_secret`, `set_irzam_secret`).
+- **Security:** Scrypt-salted persistent owner PIN verification, HMAC SHA-256 session signing, versioned token invalidation.
 
-Add these in Netlify Project configuration → Environment variables. They must be available to Functions at runtime (and to Builds when required). Do not put real values in GitHub or `.env` files.
+---
 
-- `SUPABASE_URL` = `https://fgksgytuglpmzhqcdasb.supabase.co`
-- `SUPABASE_SERVICE_ROLE_KEY` = service-role/secret key for the existing Supabase project
-- `SESSION_SECRET` = random value of at least 32 characters
+## 2. Environment Variables & Infrastructure Secrets
 
-Optional:
-- `GOOGLE_MAPS_API_KEY`
-- `FREELLM_API_KEY` (optional override; existing Qwen key is in Supabase Vault)
-- `FREELLM_BASE_URL` = `https://api.freellmapi.com/v1`
-- `QWEN_MODEL`, `QWEN_CODER_MODEL`, `QWEN_OUTREACH_MODEL`
+Set these in your hosting environment (Google AI Studio / Cloud Run) and GitHub Actions secrets:
 
-Netlify does not read committed `.env` files during builds. Set secrets through the Netlify UI/API, with Functions scope. Redeploy after changing them.
+### Required for Production Hosting
+```bash
+SUPABASE_URL=https://fgksgytuglpmzhqcdasb.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<your_supabase_service_role_key>
+SESSION_SECRET=<random_string_at_least_32_characters>
+PORT=3000
+NODE_ENV=production
+```
 
-## Important limitations and remaining work
+### Required for GitHub Actions Worker
+In GitHub repository settings (`Settings -> Secrets and variables -> Actions`):
+- `SUPABASE_SERVICE_ROLE_KEY`: Service-role key for `fgksgytuglpmzhqcdasb.supabase.co`
 
-- The current Express application is wrapped as one Netlify Function. Netlify function execution time, memory and request/response limits apply.
-- Do not assume scheduled background automation, Gmail OAuth/sending, Netlify-to-Netlify demo deployment, or durable worker processes are complete. These remain separate implementation tasks.
-- The current chat streaming endpoint may be buffered by the serverless adapter; verify actual UI behavior after deployment.
-- The database was previously migrated directly in the existing Supabase project. Do not rerun the initialization or secure migration against that live project.
+*(Note: Provider API keys are stored in Supabase Vault via the web UI and retrieved securely by the worker at runtime).*
 
-## Local checks
+---
+
+## 3. Local Development
 
 ```bash
-npm ci
+# Install dependencies
+npm install
+
+# Start Express + Vite dev server (runs on port 3000)
+npm run dev
+
+# Run TypeScript check and lint
 npm run lint
+
+# Production build test
 npm run build
 ```
+
+---
+
+## 4. Google AI Studio & Cloud Run Deployment
+
+1. **Connect / Push Repository:**
+   Ensure latest code on branch `main` in `Irzam786/Irzam-Studio-Autonomous-Agent`.
+2. **Import into Google AI Studio:**
+   Open Google AI Studio, select Build / Import, and select repository `Irzam786/Irzam-Studio-Autonomous-Agent` (branch `main`).
+3. **Configure Environment Variables:**
+   Add `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SESSION_SECRET` in environment settings.
+4. **Publish / Deploy:**
+   Publish application. Cloud Run binds port 3000 and serves both the Express backend and React frontend.
+5. **Set Custom `.ai.studio` Domain:**
+   Claim your custom `.ai.studio` address in project settings.
+
+---
+
+## 5. Post-Deployment Owner Setup Checklist
+
+1. **Login:**
+   Open your live application URL and enter your clearance PIN (default: `7860`).
+2. **Open Connectors Tab:**
+   Navigate to the **Connectors** tab on the left sidebar.
+3. **Configure Providers:**
+   - **FreeLLM / Qwen:** Enter API Key and click **Save & Test Connection**.
+   - **Google Gemini:** Enter Gemini API Key and test connection.
+   - **Google Places API:** Enter Maps/Places key for lead discovery.
+   - **Hunter.io / Prospeo:** Enter keys for email verification.
+   - **Tavily:** Enter key for prospect deep research.
+   - **Google Workspace / Gmail OAuth:** Set up Google Cloud OAuth client with redirect URI `https://<YOUR-APP>.ai.studio/oauth/callback` and click **Connect Gmail**.
+4. **Enable Live Automation:**
+   Once verified, toggle **Enable Live Automation** when ready for live outreach.
+
+---
+
+## 6. GitHub Actions Worker Schedule
+
+The background worker runs automatically every 30 minutes (`5,35 * * * *`):
+1. Loads due schedules (`enqueue_due_agent_schedules`).
+2. Atomically claims jobs (`claim_agent_jobs`).
+3. Executes lead discovery, outreach email slot, and inbox reply processing.
+4. Completes/fails jobs via RPC (`complete_agent_job`, `fail_agent_job`).

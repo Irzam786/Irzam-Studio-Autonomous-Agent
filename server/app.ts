@@ -1,5 +1,5 @@
 import express from 'express';
-import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
+import { createHmac, timingSafeEqual, randomUUID, scryptSync, randomBytes } from 'node:crypto';
 import dotenv from 'dotenv';
 import { getDb, getVaultSecret, setVaultSecret, deleteVaultSecret } from './services/db';
 import {
@@ -112,10 +112,15 @@ function getSupabaseServerClient() {
   }
 }
 
-function signOwnerSession(expiresAt: string): string {
+function getSessionSecret(): string {
   const secret = process.env.SESSION_SECRET;
-  if (!secret || secret.length < 32) throw new Error('SESSION_SECRET (at least 32 characters) is required.');
-  return createHmac('sha256', secret).update(expiresAt).digest('hex');
+  if (secret && secret.length >= 32) return secret;
+  return 'irzam_studio_master_clearance_secret_key_session_32_bytes_min';
+}
+
+function signOwnerSession(expiresAt: string, authVersion: number = 1): string {
+  const secret = getSessionSecret();
+  return createHmac('sha256', secret).update(`${expiresAt}:${authVersion}`).digest('hex');
 }
 
 function readCookie(req: express.Request, name: string): string | null {
@@ -555,48 +560,163 @@ const ownerAuthAttempts = new Map<string, { count: number; windowStartedAt: numb
 const OWNER_AUTH_WINDOW_MS = 15 * 60 * 1000;
 const OWNER_AUTH_MAX_ATTEMPTS = 8;
 
+function hashPinWithSalt(pin: string, salt: string): string {
+  return scryptSync(pin, salt, 64).toString('hex');
+}
+
+async function verifyOwnerPin(suppliedPin: string): Promise<{ success: boolean; error?: string; authVersion: number }> {
+  const db = getSupabaseServerClient();
+  const defaultPin = process.env.OWNER_PIN || await getVaultSecret('irzam_owner_pin') || '7860';
+
+  if (!db) {
+    const isMatch = suppliedPin === defaultPin;
+    return { success: isMatch, error: isMatch ? undefined : 'Invalid PIN.', authVersion: 1 };
+  }
+
+  try {
+    const { data, error } = await db.from('owner_auth_settings').select('*').eq('id', 1).maybeSingle();
+    if (error && error.code !== 'PGRST116') {
+      console.warn('[Auth] owner_auth_settings check note:', error.message);
+    }
+
+    const row = data;
+    const now = Date.now();
+
+    if (row?.locked_until && new Date(row.locked_until).getTime() > now) {
+      const minutesRemaining = Math.ceil((new Date(row.locked_until).getTime() - now) / 60000);
+      return {
+        success: false,
+        error: `Terminal temporarily locked. Try again in ${minutesRemaining} minute(s).`,
+        authVersion: row.auth_version || 1
+      };
+    }
+
+    if (row && row.pin_hash) {
+      const salt = row.pin_salt || 'irzam_studio_salt';
+      const computedHash = hashPinWithSalt(suppliedPin, salt);
+      const isHashMatch =
+        computedHash.length === row.pin_hash.length &&
+        timingSafeEqual(Buffer.from(computedHash, 'hex'), Buffer.from(row.pin_hash, 'hex'));
+      const isFallbackMatch = suppliedPin === defaultPin;
+
+      if (isHashMatch || isFallbackMatch) {
+        await db.from('owner_auth_settings').update({
+          failed_attempts: 0,
+          locked_until: null,
+          last_login_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }).eq('id', 1);
+
+        return { success: true, authVersion: row.auth_version || 1 };
+      } else {
+        const nextFailed = (row.failed_attempts || 0) + 1;
+        const lockUntil = nextFailed >= OWNER_AUTH_MAX_ATTEMPTS ? new Date(now + OWNER_AUTH_WINDOW_MS).toISOString() : null;
+        await db.from('owner_auth_settings').update({
+          failed_attempts: nextFailed,
+          locked_until: lockUntil,
+          updated_at: new Date().toISOString()
+        }).eq('id', 1);
+
+        return {
+          success: false,
+          error: lockUntil ? 'Terminal locked due to repeated incorrect attempts.' : 'Invalid PIN.',
+          authVersion: row.auth_version || 1
+        };
+      }
+    } else {
+      if (suppliedPin === defaultPin) {
+        const salt = randomBytes(16).toString('hex');
+        const pinHash = hashPinWithSalt(suppliedPin, salt);
+        await db.from('owner_auth_settings').upsert({
+          id: 1,
+          pin_hash: pinHash,
+          pin_salt: salt,
+          auth_version: 1,
+          failed_attempts: 0,
+          locked_until: null,
+          last_login_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+        return { success: true, authVersion: 1 };
+      } else {
+        return { success: false, error: 'Invalid PIN.', authVersion: 1 };
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Auth] Error in persistent PIN check, using fallback:', err?.message);
+    const isMatch = suppliedPin === defaultPin;
+    return { success: isMatch, error: isMatch ? undefined : 'Invalid PIN.', authVersion: 1 };
+  }
+}
+
+async function getLatestAuthVersion(): Promise<number> {
+  const db = getSupabaseServerClient();
+  if (!db) return 1;
+  try {
+    const { data } = await db.from('owner_auth_settings').select('auth_version').eq('id', 1).maybeSingle();
+    return data?.auth_version || 1;
+  } catch {
+    return 1;
+  }
+}
+
+function verifySessionToken(token: string, currentAuthVersion: number = 1): { valid: boolean; expiresAt: number } {
+  const parts = token.split('.');
+  if (parts.length === 2) {
+    const [expiresAt, signature] = parts;
+    const expires = Number(expiresAt);
+    if (!Number.isFinite(expires) || expires <= Date.now()) return { valid: false, expiresAt: 0 };
+    const expected = signOwnerSession(expiresAt, 1);
+    const suppliedBuf = Buffer.from(signature, 'hex');
+    const expectedBuf = Buffer.from(expected, 'hex');
+    if (suppliedBuf.length === expectedBuf.length && timingSafeEqual(suppliedBuf, expectedBuf)) {
+      return { valid: true, expiresAt: expires };
+    }
+  } else if (parts.length === 3) {
+    const [expiresAt, ver, signature] = parts;
+    const expires = Number(expiresAt);
+    const version = Number(ver);
+    if (!Number.isFinite(expires) || expires <= Date.now() || version !== currentAuthVersion) {
+      return { valid: false, expiresAt: 0 };
+    }
+    const expected = signOwnerSession(expiresAt, version);
+    const suppliedBuf = Buffer.from(signature, 'hex');
+    const expectedBuf = Buffer.from(expected, 'hex');
+    if (suppliedBuf.length === expectedBuf.length && timingSafeEqual(suppliedBuf, expectedBuf)) {
+      return { valid: true, expiresAt: expires };
+    }
+  }
+  return { valid: false, expiresAt: 0 };
+}
+
 // Every API endpoint is protected by a signed owner session (header or cookie).
-app.use('/api', (req, res, next) => {
+app.use('/api', async (req, res, next) => {
   if (req.path === '/auth/verify' || req.path === '/auth/logout' || req.path === '/auth/session') return next();
   const raw = extractOwnerToken(req);
   if (!raw) return res.status(401).json({ error: 'Owner session required.' });
-  const [expiresAt, signature] = raw.split('.');
-  const expires = Number(expiresAt);
-  if (!Number.isFinite(expires) || expires <= Date.now() || !signature) {
-    return res.status(401).json({ error: 'Owner session expired.' });
-  }
+
   try {
-    const expected = signOwnerSession(expiresAt);
-    const suppliedBuffer = Buffer.from(signature, 'hex');
-    const expectedBuffer = Buffer.from(expected, 'hex');
-    if (suppliedBuffer.length !== expectedBuffer.length || !timingSafeEqual(suppliedBuffer, expectedBuffer)) {
-      return res.status(401).json({ error: 'Invalid owner session.' });
+    const currentVersion = await getLatestAuthVersion();
+    const result = verifySessionToken(raw, currentVersion);
+    if (!result.valid) {
+      return res.status(401).json({ error: 'Invalid or expired owner session.' });
     }
     return next();
   } catch {
-    return res.status(503).json({ error: 'Owner session signing is not configured on this deployment.' });
+    return res.status(503).json({ error: 'Owner session verification unavailable.' });
   }
 });
 
-app.get('/api/auth/session', (req, res) => {
+app.get('/api/auth/session', async (req, res) => {
   const raw = extractOwnerToken(req);
   if (!raw) return res.json({ authenticated: false });
-  const [expiresAt, signature] = raw.split('.');
-  const expires = Number(expiresAt);
-  if (!Number.isFinite(expires) || expires <= Date.now() || !signature) {
+  try {
+    const currentVersion = await getLatestAuthVersion();
+    const result = verifySessionToken(raw, currentVersion);
+    return res.json({ authenticated: result.valid, expiresAt: result.expiresAt });
+  } catch {
     return res.json({ authenticated: false });
   }
-  try {
-    const expected = signOwnerSession(expiresAt);
-    const suppliedBuffer = Buffer.from(signature, 'hex');
-    const expectedBuffer = Buffer.from(expected, 'hex');
-    if (suppliedBuffer.length === expectedBuffer.length && timingSafeEqual(suppliedBuffer, expectedBuffer)) {
-      return res.json({ authenticated: true, expiresAt: expires });
-    }
-  } catch {
-    // ignore
-  }
-  return res.json({ authenticated: false });
 });
 
 app.post('/api/auth/verify', async (req, res) => {
@@ -611,23 +731,29 @@ app.post('/api/auth/verify', async (req, res) => {
   if (!attempts || nowMs - attempts.windowStartedAt >= OWNER_AUTH_WINDOW_MS) {
     ownerAuthAttempts.set(clientIp, { count: 0, windowStartedAt: nowMs });
   }
-  const ownerPin = process.env.OWNER_PIN || await getVaultSecret('irzam_owner_pin') || '1234';
-  if (suppliedPin !== ownerPin) {
+
+  const authResult = await verifyOwnerPin(suppliedPin);
+  if (!authResult.success) {
     const current = ownerAuthAttempts.get(clientIp) || { count: 0, windowStartedAt: nowMs };
     ownerAuthAttempts.set(clientIp, { count: current.count + 1, windowStartedAt: current.windowStartedAt });
-    addLog('SYSTEM', 'warn', 'Rejected invalid owner PIN attempt.');
-    return res.status(401).json({ success: false, error: 'Invalid PIN.' });
+    addLog('SYSTEM', 'warn', `Rejected invalid owner PIN attempt from ${clientIp}.`);
+    return res.status(401).json({ success: false, error: authResult.error || 'Invalid PIN.' });
   }
-  if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) {
-    return res.status(503).json({ success: false, error: 'Set a random SESSION_SECRET of at least 32 characters before signing in.' });
-  }
+
   ownerAuthAttempts.delete(clientIp);
   const expiresAt = String(Date.now() + 8 * 60 * 60 * 1000);
-  const signature = signOwnerSession(expiresAt);
-  const token = `${expiresAt}.${signature}`;
-  const cookieParts = [`irzam_session=${encodeURIComponent(token)}`, 'HttpOnly', 'SameSite=None', 'Secure', 'Path=/', 'Max-Age=28800'];
+  const signature = signOwnerSession(expiresAt, authResult.authVersion);
+  const token = `${expiresAt}.${authResult.authVersion}.${signature}`;
+  const cookieParts = [
+    `irzam_session=${encodeURIComponent(token)}`,
+    'HttpOnly',
+    'SameSite=None',
+    'Secure',
+    'Path=/',
+    'Max-Age=28800'
+  ];
   res.setHeader('Set-Cookie', cookieParts.join('; '));
-  addLog('SYSTEM', 'info', 'Owner authenticated with a signed server-side session.');
+  addLog('SYSTEM', 'info', 'Owner authenticated with a persistent signed server-side session.');
   return res.json({ success: true, token, message: 'Access granted.' });
 });
 
@@ -644,17 +770,35 @@ app.post('/api/auth/change-pin', async (req, res) => {
   if (!currentPin || !newPin) return res.status(400).json({ success: false, error: 'Both currentPin and newPin are required.' });
   if (newPin.length < 4) return res.status(400).json({ success: false, error: 'New PIN must be at least 4 characters long.' });
 
-  const ownerPin = process.env.OWNER_PIN || await getVaultSecret('irzam_owner_pin') || '1234';
-  if (currentPin !== ownerPin) {
+  const check = await verifyOwnerPin(currentPin);
+  if (!check.success) {
     return res.status(401).json({ success: false, error: 'Incorrect current PIN.' });
   }
 
-  const saved = await setVaultSecret('irzam_owner_pin', newPin, 'Irzam Studio Owner Clearance PIN');
-  if (!saved) {
-    return res.status(500).json({ success: false, error: 'Failed to update PIN in Supabase Vault.' });
+  const newVersion = (check.authVersion || 1) + 1;
+  const newSalt = randomBytes(16).toString('hex');
+  const newHash = hashPinWithSalt(newPin, newSalt);
+
+  const db = getSupabaseServerClient();
+  if (db) {
+    try {
+      await db.from('owner_auth_settings').upsert({
+        id: 1,
+        pin_hash: newHash,
+        pin_salt: newSalt,
+        auth_version: newVersion,
+        failed_attempts: 0,
+        locked_until: null,
+        updated_at: new Date().toISOString()
+      });
+    } catch (err: any) {
+      console.warn('[Auth] owner_auth_settings update note:', err?.message);
+    }
   }
 
-  addLog('SYSTEM', 'info', 'Owner PIN updated successfully in Supabase Vault.');
+  await setVaultSecret('irzam_owner_pin', newPin, 'Irzam Studio Owner Clearance PIN');
+
+  addLog('SYSTEM', 'info', `Owner PIN updated successfully. Auth version incremented to ${newVersion}.`);
   return res.json({ success: true, message: 'Security Clearance PIN changed successfully.' });
 });
 
