@@ -783,23 +783,28 @@ app.post('/api/auth/change-pin', async (req, res) => {
   const newHash = hashPinWithSalt(newPin, newSalt);
 
   const db = getSupabaseServerClient();
-  if (db) {
-    try {
-      await db.from('owner_auth_settings').upsert({
-        id: 1,
-        pin_hash: newHash,
-        pin_salt: newSalt,
-        auth_version: newVersion,
-        failed_attempts: 0,
-        locked_until: null,
-        updated_at: new Date().toISOString()
-      });
-    } catch (err: any) {
-      console.warn('[Auth] owner_auth_settings update note:', err?.message);
-    }
+  if (!db) {
+    return res.status(503).json({ success: false, error: 'Authentication database is unavailable. PIN was not changed.' });
   }
 
-  await setVaultSecret('irzam_owner_pin', newPin, 'Irzam Studio Owner Clearance PIN');
+  const { error: pinUpdateError } = await db.from('owner_auth_settings').upsert({
+    id: 1,
+    pin_hash: newHash,
+    pin_salt: newSalt,
+    auth_version: newVersion,
+    failed_attempts: 0,
+    locked_until: null,
+    updated_at: new Date().toISOString()
+  });
+  if (pinUpdateError) {
+    console.error('[Auth] PIN update failed:', pinUpdateError.message);
+    return res.status(502).json({ success: false, error: 'PIN update failed. The existing PIN remains active.' });
+  }
+
+  const vaultUpdated = await setVaultSecret('irzam_owner_pin', newPin, 'Irzam Studio Owner Clearance PIN');
+  if (!vaultUpdated) {
+    console.warn('[Auth] PIN hash saved, but Vault bootstrap secret could not be rotated.');
+  }
 
   addLog('SYSTEM', 'info', `Owner PIN updated successfully. Auth version incremented to ${newVersion}.`);
   return res.json({ success: true, message: 'Security Clearance PIN changed successfully.' });
