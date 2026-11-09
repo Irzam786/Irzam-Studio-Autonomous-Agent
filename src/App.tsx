@@ -622,13 +622,46 @@ export default function App() {
       const height = 660;
       const left = Math.round(window.screen.width / 2 - width / 2);
       const top = Math.round(window.screen.height / 2 - height / 2);
-      window.open(
+      const popup = window.open(
         data.authUrl,
         'google_oauth_popup',
         `toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=${width},height=${height},top=${top},left=${left}`
       );
-    } catch {
-      showNotification('Failed to open Google OAuth window.', 'warn');
+      if (!popup) {
+        showNotification('Google sign-in popup was blocked. Allow popups and try again.', 'warn');
+        return;
+      }
+
+      let finished = false;
+      const finish = async (success: boolean, email?: string, error?: string) => {
+        if (finished) return;
+        finished = true;
+        window.removeEventListener('message', onMessage);
+        window.clearInterval(closeTimer);
+        if (!popup.closed) popup.close();
+        if (success) {
+          showNotification(`Gmail connected: ${email || 'Google Workspace'}`);
+          await fetchAllData();
+        } else if (error) {
+          showNotification(`Gmail OAuth failed: ${error}`, 'warn');
+        }
+      };
+      const onMessage = (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) return;
+        if (event.data?.type === 'GMAIL_OAUTH_SUCCESS') {
+          void finish(true, String(event.data.email || ''));
+        } else if (event.data?.type === 'GOOGLE_OAUTH_ERROR') {
+          void finish(false, undefined, String(event.data.error || 'Google authorization failed.'));
+        }
+      };
+      window.addEventListener('message', onMessage);
+      const closeTimer = window.setInterval(() => {
+        if (popup.closed && !finished) {
+          void finish(false, undefined, 'The authorization window closed before confirmation.');
+        }
+      }, 500);
+    } catch (error: any) {
+      showNotification(error?.message || 'Failed to open Google OAuth window.', 'warn');
     }
   };
 
