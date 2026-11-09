@@ -15,6 +15,7 @@ import {
   sendGmailEmail
 } from './services/gmail';
 import { createAndDeployDemo } from './services/demos';
+import { runAgentChat } from './services/agent';
 
 dotenv.config();
 
@@ -1800,8 +1801,21 @@ app.post('/api/chat', async (req, res) => {
     else if (text.includes('outreach') || text.includes('email')) selectedModel = process.env.QWEN_OUTREACH_MODEL || selectedModel;
   }
   try {
-    const result = await generateQwenCompletion(String(message), Array.isArray(history) ? history : [], selectedModel);
-    return res.json({ response: result.content, modelUsed: result.model, autoRouted: Boolean(autoRoute), deployedDemo: null, timestamp: new Date().toISOString() });
+    const result = await runAgentChat(
+      String(message),
+      Array.isArray(history) ? history : [],
+      selectedModel,
+      buildEnrichedSystemPrompt(),
+    );
+    return res.json({
+      response: result.content,
+      modelUsed: result.model,
+      autoRouted: Boolean(autoRoute),
+      deployedDemo: null,
+      toolsUsed: result.toolsUsed,
+      taskId: result.taskId,
+      timestamp: new Date().toISOString(),
+    });
   } catch (error: any) {
     addLog('FREEMODEL', 'error', `Qwen generation failed: ${error.message}`);
     return res.status(502).json({ error: error.message, modelUsed: null });
@@ -1826,16 +1840,44 @@ app.post('/api/chat/stream', async (req, res) => {
       if (text.includes('code') || text.includes('website') || text.includes('demo')) selectedModel = process.env.QWEN_CODER_MODEL || selectedModel;
       else if (text.includes('outreach') || text.includes('email')) selectedModel = process.env.QWEN_OUTREACH_MODEL || selectedModel;
     }
-    send('stage', { stage: 'calling_engine', label: `Connecting to ${selectedModel} via FreeLLMAPI...` });
-    const result = await generateQwenCompletion(String(message || ''), Array.isArray(history) ? history : [], selectedModel);
+    send('stage', { stage: 'calling_engine', label: `Connecting to ${selectedModel} with ReAct tool calling...` });
+    const result = await runAgentChat(
+      String(message || ''),
+      Array.isArray(history) ? history : [],
+      selectedModel,
+      buildEnrichedSystemPrompt(),
+      (type, detail, payload) => {
+        if (aborted) return;
+        const stage = type === 'thinking'
+          ? 'thinking'
+          : type === 'tool_start'
+            ? 'researching'
+            : type === 'tool_result'
+              ? 'saving'
+              : type === 'error'
+                ? 'error'
+                : 'generating';
+        send('stage', {
+          stage,
+          label: detail,
+          tool: payload?.tool,
+        });
+      },
+    );
     if (!aborted) {
-      send('stage', { stage: 'generating', label: 'Response received...' });
+      send('stage', { stage: 'generating', label: 'Preparing final response...' });
       const chars = Array.from(result.content);
       for (let i = 0; i < chars.length; i += 120) {
         if (aborted) break;
         send('chunk', { text: chars.slice(i, i + 120).join('') });
       }
-      send('done', { modelUsed: result.model, fullText: result.content, deployedDemo: null });
+      send('done', {
+        modelUsed: result.model,
+        fullText: result.content,
+        deployedDemo: null,
+        toolsUsed: result.toolsUsed,
+        taskId: result.taskId,
+      });
     }
     return res.end();
   } catch (error: any) {
