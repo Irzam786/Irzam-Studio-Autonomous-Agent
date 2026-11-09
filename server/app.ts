@@ -114,8 +114,10 @@ function getSupabaseServerClient() {
 
 function getSessionSecret(): string {
   const secret = process.env.SESSION_SECRET;
-  if (secret && secret.length >= 32) return secret;
-  return 'irzam_studio_master_clearance_secret_key_session_32_bytes_min';
+  if (!secret || secret.length < 32) {
+    throw new Error('SESSION_SECRET must be configured with at least 32 characters.');
+  }
+  return secret;
 }
 
 function signOwnerSession(expiresAt: string, authVersion: number = 1): string {
@@ -566,10 +568,13 @@ function hashPinWithSalt(pin: string, salt: string): string {
 
 async function verifyOwnerPin(suppliedPin: string): Promise<{ success: boolean; error?: string; authVersion: number }> {
   const db = getSupabaseServerClient();
-  const defaultPin = process.env.OWNER_PIN || await getVaultSecret('irzam_owner_pin') || '7860';
+  const defaultPin = process.env.OWNER_PIN || await getVaultSecret('irzam_owner_pin') || '';
 
   if (!db) {
-    const isMatch = suppliedPin === defaultPin;
+    if (process.env.NODE_ENV === 'production') {
+      return { success: false, error: 'Authentication database unavailable. Access is denied.', authVersion: 1 };
+    }
+    const isMatch = Boolean(defaultPin) && suppliedPin === defaultPin;
     return { success: isMatch, error: isMatch ? undefined : 'Invalid PIN.', authVersion: 1 };
   }
 
@@ -597,9 +602,7 @@ async function verifyOwnerPin(suppliedPin: string): Promise<{ success: boolean; 
       const isHashMatch =
         computedHash.length === row.pin_hash.length &&
         timingSafeEqual(Buffer.from(computedHash, 'hex'), Buffer.from(row.pin_hash, 'hex'));
-      const isFallbackMatch = suppliedPin === defaultPin;
-
-      if (isHashMatch || isFallbackMatch) {
+      if (isHashMatch) {
         await db.from('owner_auth_settings').update({
           failed_attempts: 0,
           locked_until: null,
@@ -624,10 +627,10 @@ async function verifyOwnerPin(suppliedPin: string): Promise<{ success: boolean; 
         };
       }
     } else {
-      if (suppliedPin === defaultPin) {
+      if (defaultPin && suppliedPin === defaultPin) {
         const salt = randomBytes(16).toString('hex');
         const pinHash = hashPinWithSalt(suppliedPin, salt);
-        await db.from('owner_auth_settings').upsert({
+        const { error: insertError } = await db.from('owner_auth_settings').upsert({
           id: 1,
           pin_hash: pinHash,
           pin_salt: salt,
@@ -637,15 +640,15 @@ async function verifyOwnerPin(suppliedPin: string): Promise<{ success: boolean; 
           last_login_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         });
+        if (insertError) throw insertError;
         return { success: true, authVersion: 1 };
       } else {
-        return { success: false, error: 'Invalid PIN.', authVersion: 1 };
+        return { success: false, error: 'Owner PIN is not configured.', authVersion: 1 };
       }
     }
   } catch (err: any) {
-    console.warn('[Auth] Error in persistent PIN check, using fallback:', err?.message);
-    const isMatch = suppliedPin === defaultPin;
-    return { success: isMatch, error: isMatch ? undefined : 'Invalid PIN.', authVersion: 1 };
+    console.warn('[Auth] Error in persistent PIN check; access denied:', err?.message);
+    return { success: false, error: 'Authentication service unavailable. Access is denied.', authVersion: 1 };
   }
 }
 
