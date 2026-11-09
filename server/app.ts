@@ -1294,6 +1294,20 @@ app.get('/api/gmail/oauth/auth-url', (req, res) => {
   }
 });
 
+app.post('/api/gmail/oauth/callback', async (req, res) => {
+  const code = String(req.body?.code || '').trim();
+  if (!code) {
+    return res.status(400).json({ success: false, error: 'A real Google OAuth authorization code is required.' });
+  }
+  try {
+    const account = await exchangeOAuthCode(code);
+    return res.json({ success: true, account, message: `Google Workspace ${account.email} connected securely.` });
+  } catch (err: any) {
+    addLog('GMAIL', 'error', `Gmail OAuth code exchange failed: ${err.message}`);
+    return res.status(400).json({ success: false, error: err.message || 'Google OAuth exchange failed.' });
+  }
+});
+
 app.get('/oauth/callback', async (req, res) => {
   const code = String(req.query.code || '');
   if (!code) {
