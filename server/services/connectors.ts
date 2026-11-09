@@ -150,9 +150,13 @@ export async function getConnectorsWithStatus() {
   return result;
 }
 
-export async function connectProvider(id: string, secretValue: string, nonSensitiveConfig: any = {}) {
+export async function connectProvider(id: string, secretValue: string, nonSensitiveConfig: any = {}, enabledForAgent = true) {
   const catalogItem = CONNECTOR_CATALOG.find((c) => c.id === id);
   if (!catalogItem) throw new Error(`Unknown connector: ${id}`);
+
+  if (catalogItem.vaultSecretName && !secretValue) {
+    throw new Error(`A credential is required to connect ${catalogItem.name}.`);
+  }
 
   if (catalogItem.vaultSecretName && secretValue) {
     const ok = await setVaultSecret(catalogItem.vaultSecretName, secretValue, `${catalogItem.name} credential`);
@@ -166,7 +170,7 @@ export async function connectProvider(id: string, secretValue: string, nonSensit
     integration_name: catalogItem.name,
     category: catalogItem.category,
     connection_status: 'connected',
-    enabled_for_agent: true,
+    enabled_for_agent: Boolean(enabledForAgent),
     encrypted_secret_reference: catalogItem.vaultSecretName || null,
     non_sensitive_config: nonSensitiveConfig,
     last_verified_at: new Date().toISOString(),
