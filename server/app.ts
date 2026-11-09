@@ -1363,7 +1363,7 @@ app.get('/api/gmail/accounts', async (_req, res) => {
           tokenScope: 'gmail.send gmail.readonly',
         }));
       }
-      const { data: repData } = await db.from('inbox_replies').select('*').order('received_at', { ascending: false });
+      const { data: repData } = await db.from('inbox_replies').select('*').order('detected_at', { ascending: false });
       if (repData && repData.length > 0) {
         replies = repData.map((r: any) => ({
           id: r.id,
