@@ -124,6 +124,18 @@ function readCookie(req: express.Request, name: string): string | null {
   return entry ? decodeURIComponent(entry.slice(name.length + 1)) : null;
 }
 
+function extractOwnerToken(req: express.Request): string | null {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  const customHeader = req.headers['x-owner-token'];
+  if (typeof customHeader === 'string' && customHeader) {
+    return customHeader.trim();
+  }
+  return readCookie(req, 'irzam_session');
+}
+
 // Data Stores
 interface HostedDemo {
   id: string;
@@ -543,10 +555,10 @@ const ownerAuthAttempts = new Map<string, { count: number; windowStartedAt: numb
 const OWNER_AUTH_WINDOW_MS = 15 * 60 * 1000;
 const OWNER_AUTH_MAX_ATTEMPTS = 8;
 
-// Every API endpoint is protected by a signed, HttpOnly owner session.
+// Every API endpoint is protected by a signed owner session (header or cookie).
 app.use('/api', (req, res, next) => {
   if (req.path === '/auth/verify' || req.path === '/auth/logout' || req.path === '/auth/session') return next();
-  const raw = readCookie(req, 'irzam_session');
+  const raw = extractOwnerToken(req);
   if (!raw) return res.status(401).json({ error: 'Owner session required.' });
   const [expiresAt, signature] = raw.split('.');
   const expires = Number(expiresAt);
@@ -567,7 +579,7 @@ app.use('/api', (req, res, next) => {
 });
 
 app.get('/api/auth/session', (req, res) => {
-  const raw = readCookie(req, 'irzam_session');
+  const raw = extractOwnerToken(req);
   if (!raw) return res.json({ authenticated: false });
   const [expiresAt, signature] = raw.split('.');
   const expires = Number(expiresAt);
@@ -612,11 +624,11 @@ app.post('/api/auth/verify', async (req, res) => {
   ownerAuthAttempts.delete(clientIp);
   const expiresAt = String(Date.now() + 8 * 60 * 60 * 1000);
   const signature = signOwnerSession(expiresAt);
-  const cookieParts = [`irzam_session=${encodeURIComponent(`${expiresAt}.${signature}`)}`, 'HttpOnly', 'SameSite=Strict', 'Path=/', 'Max-Age=28800'];
-  if (process.env.NODE_ENV === 'production') cookieParts.push('Secure');
+  const token = `${expiresAt}.${signature}`;
+  const cookieParts = [`irzam_session=${encodeURIComponent(token)}`, 'HttpOnly', 'SameSite=None', 'Secure', 'Path=/', 'Max-Age=28800'];
   res.setHeader('Set-Cookie', cookieParts.join('; '));
   addLog('SYSTEM', 'info', 'Owner authenticated with a signed server-side session.');
-  return res.json({ success: true, message: 'Access granted.' });
+  return res.json({ success: true, token, message: 'Access granted.' });
 });
 
 app.post('/api/auth/logout', (_req, res) => {

@@ -75,6 +75,20 @@ const INITIAL_SESSIONS: ChatSession[] = [
   },
 ];
 
+const authFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const token = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('irzam_token') || '' : '';
+  const headers = new Headers(init?.headers || {});
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+    headers.set('x-owner-token', token);
+  }
+  return fetch(input, {
+    ...init,
+    headers,
+    credentials: 'include',
+  });
+};
+
 export default function App() {
   // 1. PIN Login Access
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -198,8 +212,8 @@ export default function App() {
   const fetchAllData = async () => {
     try {
       // 1. Status & Cron
-      const statusRes = await fetch('/api/status');
-      if (statusRes.status === 401) {
+      const statusRes = await authFetch('/api/status');
+      if (statusRes.status === 401 && !sessionStorage.getItem('irzam_token')) {
         sessionStorage.removeItem('irzam_authenticated');
         setIsAuthenticated(false);
         return;
@@ -210,7 +224,7 @@ export default function App() {
       }
 
       // 2. Config
-      const configRes = await fetch('/api/config');
+      const configRes = await authFetch('/api/config');
       if (configRes.ok) {
         const cData = await configRes.json();
         setConfig(cData);
@@ -221,68 +235,68 @@ export default function App() {
       }
 
       // 3. Connectors
-      const connRes = await fetch('/api/connectors');
+      const connRes = await authFetch('/api/connectors');
       if (connRes.ok) {
         const connData = await connRes.json();
         setConnectors(connData.connectors || []);
       }
 
       // 4. Operational Rules & Training Messages
-      const rulesRes = await fetch('/api/training/rules');
+      const rulesRes = await authFetch('/api/training/rules');
       if (rulesRes.ok) {
         const rulesData = await rulesRes.json();
         setAgentRules(rulesData.rules || []);
       }
 
-      const tMsgRes = await fetch('/api/training/messages');
+      const tMsgRes = await authFetch('/api/training/messages');
       if (tMsgRes.ok) {
         const tMsgData = await tMsgRes.json();
         setTrainingMessages(tMsgData.messages || []);
       }
 
       // 5. Campaigns
-      const campRes = await fetch('/api/campaigns');
+      const campRes = await authFetch('/api/campaigns');
       if (campRes.ok) {
         const campData = await campRes.json();
         setCampaigns(campData.campaigns || []);
       }
 
       // 6. Outreach Queue
-      const queueRes = await fetch('/api/outreach/queue');
+      const queueRes = await authFetch('/api/outreach/queue');
       if (queueRes.ok) {
         const qData = await queueRes.json();
         setOutreachQueue(qData.queue || []);
       }
 
       // 7. Reports
-      const repRes = await fetch('/api/reports');
+      const repRes = await authFetch('/api/reports');
       if (repRes.ok) {
         const repData = await repRes.json();
         setDailyReports(repData.reports || []);
       }
 
       // 8. Automation Workflow Runs & Logs
-      const wfRes = await fetch('/api/automation/history');
+      const wfRes = await authFetch('/api/automation/history');
       if (wfRes.ok) {
         const wfData = await wfRes.json();
         setWorkflowRuns(wfData.runs || []);
       }
 
-      const logsRes = await fetch('/api/logs');
+      const logsRes = await authFetch('/api/logs');
       if (logsRes.ok) {
         const lData = await logsRes.json();
         setSystemLogs(lData.logs || []);
       }
 
       // 9. Demos
-      const demosRes = await fetch('/api/demos');
+      const demosRes = await authFetch('/api/demos');
       if (demosRes.ok) {
         const dData = await demosRes.json();
         setHostedDemos(dData.demos || []);
       }
 
       // 10. Gmail & Replies
-      const gmailRes = await fetch('/api/gmail/accounts');
+      const gmailRes = await authFetch('/api/gmail/accounts');
       if (gmailRes.ok) {
         const gData = await gmailRes.json();
         setGmailAccounts(gData.accounts || []);
@@ -290,7 +304,7 @@ export default function App() {
       }
 
       // 11. Leads
-      const leadsRes = await fetch('/api/leads');
+      const leadsRes = await authFetch('/api/leads');
       if (leadsRes.ok) {
         const lData = await leadsRes.json();
         setLeads(lData.leads || []);
@@ -307,8 +321,13 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin }),
+        credentials: 'include',
       });
       if (res.ok) {
+        const data = await res.json();
+        if (data.token) {
+          sessionStorage.setItem('irzam_token', data.token);
+        }
         sessionStorage.setItem('irzam_authenticated', 'true');
         setIsAuthenticated(true);
         return true;
@@ -320,8 +339,9 @@ export default function App() {
   };
 
   const handleLockTerminal = () => {
-    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    authFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
     sessionStorage.removeItem('irzam_authenticated');
+    sessionStorage.removeItem('irzam_token');
     setIsAuthenticated(false);
   };
 
@@ -437,7 +457,7 @@ export default function App() {
     setActivityLabel('Receiving message...');
 
     try {
-      const streamRes = await fetch('/api/chat/stream', {
+      const streamRes = await authFetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
@@ -581,7 +601,7 @@ export default function App() {
   // Google OAuth popup
   const handleOpenGoogleOAuthPopup = async () => {
     try {
-      const res = await fetch(`/api/gmail/oauth/auth-url?redirectOrigin=${encodeURIComponent(window.location.origin)}`);
+      const res = await authFetch(`/api/gmail/oauth/auth-url?redirectOrigin=${encodeURIComponent(window.location.origin)}`);
       const data = await res.json();
       if (!res.ok || !data.authUrl) {
         showNotification(data.error || 'Gmail OAuth is not enabled yet.', 'warn');
@@ -604,7 +624,7 @@ export default function App() {
   // Connector actions
   const handleSaveConnector = async (id: string, credential: string, enabledForAgent: boolean) => {
     try {
-      const res = await fetch(`/api/connectors/${id}`, {
+      const res = await authFetch(`/api/connectors/${id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credential, enabledForAgent }),
@@ -621,7 +641,7 @@ export default function App() {
 
   const handleTestConnector = async (id: string) => {
     try {
-      const res = await fetch(`/api/connectors/${id}/test`, { method: 'POST' });
+      const res = await authFetch(`/api/connectors/${id}/test`, { method: 'POST' });
       const data = await res.json();
       return { success: data.success, message: data.message, latency: data.latency };
     } catch (err: any) {
@@ -631,7 +651,7 @@ export default function App() {
 
   const handleDisconnectConnector = async (id: string) => {
     try {
-      const res = await fetch(`/api/connectors/${id}/disconnect`, { method: 'POST' });
+      const res = await authFetch(`/api/connectors/${id}/disconnect`, { method: 'POST' });
       if (res.ok) {
         showNotification('Connector disconnected.');
         await fetchAllData();
@@ -646,7 +666,7 @@ export default function App() {
   // Personal Training handlers
   const handleSendTrainingMessage = async (message: string) => {
     try {
-      const res = await fetch('/api/training/chat', {
+      const res = await authFetch('/api/training/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message }),
@@ -665,7 +685,7 @@ export default function App() {
 
   const handleAddRule = async (ruleData: Omit<AgentRule, 'id' | 'created_at' | 'updated_at' | 'version'>) => {
     try {
-      const res = await fetch('/api/training/rules', {
+      const res = await authFetch('/api/training/rules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(ruleData),
@@ -685,7 +705,7 @@ export default function App() {
 
   const handleToggleRule = async (id: string, is_active: boolean) => {
     try {
-      const res = await fetch(`/api/training/rules/${id}`, {
+      const res = await authFetch(`/api/training/rules/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_active }),
@@ -704,7 +724,7 @@ export default function App() {
 
   const handleDeleteRule = async (id: string) => {
     try {
-      const res = await fetch(`/api/training/rules/${id}`, { method: 'DELETE' });
+      const res = await authFetch(`/api/training/rules/${id}`, { method: 'DELETE' });
       if (res.ok) {
         setAgentRules(prev => prev.filter(r => r.id !== id));
         deleteRuleFromSupabase(id).catch(() => {});
@@ -720,7 +740,7 @@ export default function App() {
   // Campaigns handlers
   const handleCreateCampaign = async (campaignData: Omit<Campaign, 'id' | 'created_at' | 'updated_at' | 'leads_count' | 'sent_count' | 'replies_count'>) => {
     try {
-      const res = await fetch('/api/campaigns', {
+      const res = await authFetch('/api/campaigns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(campaignData),
@@ -740,7 +760,7 @@ export default function App() {
 
   const handleToggleCampaignStatus = async (id: string, status: Campaign['status']) => {
     try {
-      const res = await fetch(`/api/campaigns/${id}`, {
+      const res = await authFetch(`/api/campaigns/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
@@ -757,7 +777,7 @@ export default function App() {
 
   const handleDeleteCampaign = async (id: string) => {
     try {
-      const res = await fetch(`/api/campaigns/${id}`, { method: 'DELETE' });
+      const res = await authFetch(`/api/campaigns/${id}`, { method: 'DELETE' });
       if (res.ok) {
         setCampaigns(prev => prev.filter(c => c.id !== id));
         showNotification('Campaign deleted.');
@@ -772,7 +792,7 @@ export default function App() {
   // Outreach Queue handlers
   const handleDispatchDueQueue = async () => {
     try {
-      const res = await fetch('/api/outreach/queue/dispatch-due', { method: 'POST' });
+      const res = await authFetch('/api/outreach/queue/dispatch-due', { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         showNotification(`Dispatched ${data.count} due email slot(s)!`);
@@ -785,7 +805,7 @@ export default function App() {
 
   const handleCheckFollowups = async () => {
     try {
-      const res = await fetch('/api/outreach/followups/check', { method: 'POST' });
+      const res = await authFetch('/api/outreach/followups/check', { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         showNotification(`Follow-up check complete. ${data.followupsQueued} stages queued.`);
@@ -798,7 +818,7 @@ export default function App() {
 
   const handleCancelQueueSlot = async (id: string) => {
     try {
-      const res = await fetch(`/api/outreach/queue/${id}/cancel`, { method: 'POST' });
+      const res = await authFetch(`/api/outreach/queue/${id}/cancel`, { method: 'POST' });
       if (res.ok) {
         setOutreachQueue(prev => prev.map(q => q.id === id ? { ...q, status: 'cancelled' } : q));
         showNotification('Outreach slot cancelled.');
@@ -813,7 +833,7 @@ export default function App() {
   // Inbox & AI Reply handlers
   const handleScanInboxes = async () => {
     try {
-      const res = await fetch('/api/inbox/scan', { method: 'POST' });
+      const res = await authFetch('/api/inbox/scan', { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         setDetectedReplies(data.replies || []);
@@ -826,7 +846,7 @@ export default function App() {
 
   const handleGenerateReplyResponse = async (replyId: string) => {
     try {
-      const res = await fetch(`/api/inbox/replies/${replyId}/generate-response`, { method: 'POST' });
+      const res = await authFetch(`/api/inbox/replies/${replyId}/generate-response`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         return data.suggestedResponse;
@@ -839,7 +859,7 @@ export default function App() {
 
   const handleSendReplyResponse = async (replyId: string, responseText: string) => {
     try {
-      const res = await fetch(`/api/inbox/replies/${replyId}/send-response`, {
+      const res = await authFetch(`/api/inbox/replies/${replyId}/send-response`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ responseText }),
@@ -857,7 +877,7 @@ export default function App() {
   // Reports handlers
   const handleGenerateReport = async () => {
     try {
-      const res = await fetch('/api/reports/generate', { method: 'POST' });
+      const res = await authFetch('/api/reports/generate', { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         setDailyReports(prev => [data.report, ...prev]);
@@ -870,7 +890,7 @@ export default function App() {
 
   const handleSendReportEmail = async (id: string) => {
     try {
-      const res = await fetch(`/api/reports/${id}/send`, { method: 'POST' });
+      const res = await authFetch(`/api/reports/${id}/send`, { method: 'POST' });
       if (res.ok) {
         showNotification('Report emailed to operator via Gmail!');
         await fetchAllData();
@@ -885,7 +905,7 @@ export default function App() {
   // Workflow trigger handler
   const handleTriggerWorkflow = async (workflow: string) => {
     try {
-      const res = await fetch(`/api/automation/trigger/${workflow}`, { method: 'POST' });
+      const res = await authFetch(`/api/automation/trigger/${workflow}`, { method: 'POST' });
       if (res.ok) {
         showNotification(`Workflow "${workflow}" completed!`);
         await fetchAllData();
@@ -898,7 +918,7 @@ export default function App() {
   // Leads handlers
   const handleAddLead = async (leadData: Omit<Lead, 'id' | 'created_at' | 'updated_at'>): Promise<boolean> => {
     try {
-      const res = await fetch('/api/leads', {
+      const res = await authFetch('/api/leads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(leadData),
@@ -917,7 +937,7 @@ export default function App() {
 
   const handleUpdateLeadStatus = async (id: string, status: Lead['status']): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/leads/${id}`, {
+      const res = await authFetch(`/api/leads/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
@@ -935,7 +955,7 @@ export default function App() {
 
   const handleDeleteLead = async (id: string): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/leads/${id}`, { method: 'DELETE' });
+      const res = await authFetch(`/api/leads/${id}`, { method: 'DELETE' });
       if (res.ok) {
         setLeads((prev) => prev.filter((l) => l.id !== id));
         deleteLeadFromSupabase(id).catch(() => {});
@@ -950,7 +970,7 @@ export default function App() {
 
   const handleDispatchLeadEmail = async (leadId: string): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/leads/${leadId}/dispatch`, { method: 'POST' });
+      const res = await authFetch(`/api/leads/${leadId}/dispatch`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         setLeads((prev) => prev.map((l) => (l.id === leadId ? data.lead : l)));
@@ -973,7 +993,7 @@ export default function App() {
 
   // Demos & Config handlers
   const handleDeployManualDemo = async (title: string, clientName: string, htmlContent: string) => {
-    const res = await fetch('/api/demos', {
+    const res = await authFetch('/api/demos', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, clientName, htmlContent }),
@@ -987,7 +1007,7 @@ export default function App() {
   };
 
   const handleDeleteDemo = async (id: string) => {
-    const res = await fetch(`/api/demos/${id}`, { method: 'DELETE' });
+    const res = await authFetch(`/api/demos/${id}`, { method: 'DELETE' });
     if (res.ok) {
       setHostedDemos((prev) => prev.filter((d) => d.id !== id));
       showNotification('Demo removed.');
@@ -996,7 +1016,7 @@ export default function App() {
 
   const handleSaveConfig = async (updated: Partial<SystemConfig>) => {
     saveConfigToSupabase(updated).catch(() => {});
-    const res = await fetch('/api/config', {
+    const res = await authFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updated),
@@ -1009,7 +1029,7 @@ export default function App() {
 
   const handleSendEmail = async (emailData: any) => {
     try {
-      const res = await fetch('/api/gmail/send', {
+      const res = await authFetch('/api/gmail/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(emailData),
