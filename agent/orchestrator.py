@@ -45,7 +45,8 @@ class Orchestrator:
                 self.store.fail_job(job_id, worker_id, error=str(e))
                 results.append({"id": job_id, "status": "failed", "error": str(e)})
 
-        return {"enqueued": len(enqueued), "processed": len(results), "jobs": results}
+        enqueued_count = enqueued if isinstance(enqueued, int) else (len(enqueued) if enqueued else 0)
+        return {"enqueued": enqueued_count, "processed": len(results), "jobs": results}
 
     def execute_workflow(self, workflow_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if workflow_type == "daily_lead_discovery":
