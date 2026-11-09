@@ -142,59 +142,21 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({
         }
       }, 1000);
 
-      // Add listener for OAuth callback message from popup window
+      // The server completes OAuth, stores the refresh token in Vault, and persists the Gmail account.
+      // The popup only reports a non-sensitive email address; tokens never pass through the browser.
       const messageListener = async (event: MessageEvent) => {
-        // 1. Full token exchange success from dedicated /oauth/callback route
-        if (event.data?.type === 'GOOGLE_OAUTH_SUCCESS') {
+        if (event.origin !== window.location.origin) return;
+        if (event.data?.type === 'GMAIL_OAUTH_SUCCESS') {
           window.removeEventListener('message', messageListener);
           clearInterval(checkTimer);
-
-          const { refreshToken, accessToken, email, accountId } = event.data;
-          
-          try {
-            // Immediate Supabase UPSERT into gmail_tokens table
-            const client = getSupabase();
-            if (client && email) {
-              const accId = accountId || `gmail-${Date.now()}`;
-              await client.from('gmail_tokens').upsert({
-                id: accId,
-                email: email,
-                label: `Google Workspace (${email.split('@')[0]})`,
-                connected: true,
-                connected_at: new Date().toISOString(),
-                daily_send_quota: 500,
-                sent_today: 0,
-                inbox_unread_count: 0,
-                reply_watcher_active: true,
-                last_sync_at: new Date().toISOString(),
-                is_primary: true,
-                token_scope: 'https://mail.google.com/',
-                refresh_token: refreshToken || null,
-                access_token: accessToken || null,
-              });
-            }
-
-            setOauthStatus({
-              type: 'success',
-              message: `Successfully connected ${email} with offline Refresh Token and saved to Supabase!`
-            });
-
-            // Refresh UI so connected Gmail address is displayed under "Connected Accounts"
-            await onRefreshData();
-          } catch (err: any) {
-            setOauthStatus({
-              type: 'error',
-              message: `Failed to save token to Supabase: ${err.message}`
-            });
-          } finally {
-            setIsAuthorizingGoogle(false);
-            if (popup && !popup.closed) {
-              popup.close();
-            }
-          }
-        } 
-        // 2. Auth error from Google
-        else if (event.data?.type === 'GOOGLE_OAUTH_ERROR') {
+          setOauthStatus({
+            type: 'success',
+            message: `Successfully connected ${event.data.email || 'Google Workspace'} securely.`
+          });
+          setIsAuthorizingGoogle(false);
+          if (popup && !popup.closed) popup.close();
+          await onRefreshData();
+        } else if (event.data?.type === 'GOOGLE_OAUTH_ERROR') {
           window.removeEventListener('message', messageListener);
           clearInterval(checkTimer);
           setIsAuthorizingGoogle(false);
@@ -203,43 +165,8 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({
             message: `Google OAuth Error: ${event.data.error || 'Authorization failed'}`
           });
         }
-        // 3. Fallback code pass-through if code returned directly
-        else if (event.data?.type === 'GOOGLE_OAUTH_CODE' && event.data?.code) {
-          window.removeEventListener('message', messageListener);
-          clearInterval(checkTimer);
-          try {
-            popup?.close();
-            const tokenRes = await fetch('/api/gmail/oauth/callback', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                code: event.data.code,
-                redirectUri,
-              }),
-            });
-            const tokenData = await tokenRes.json();
-            if (tokenData.success) {
-              // Direct Supabase upsert
-              const client = getSupabase();
-              if (client && tokenData.account) {
-                await saveGmailTokenToSupabase(tokenData.account, tokenData.account.refreshToken);
-              }
-
-              setOauthStatus({
-                type: 'success',
-                message: tokenData.message || 'Google account linked with mail.google.com scope and saved to Supabase!'
-              });
-            }
-            await onRefreshData();
-          } catch (err: any) {
-            setOauthStatus({ type: 'error', message: err.message || 'OAuth token exchange failed' });
-          } finally {
-            setIsAuthorizingGoogle(false);
-          }
-        }
       };
 
-      window.addEventListener('message', messageListener);
 
     } catch (err: any) {
       setIsAuthorizingGoogle(false);
