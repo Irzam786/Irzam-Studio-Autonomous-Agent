@@ -178,55 +178,37 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({
     }
   };
 
-  // Manual / Fast Connect Fallback
+  // Manual code exchange fallback. An email address alone never creates a connected account.
   const handleManualConnectSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!manualEmail.trim()) return;
+    const code = manualCode.trim();
+    if (!code) {
+      setOauthStatus({ type: 'error', message: 'Real Google authorization code is required. An email address alone cannot connect Gmail.' });
+      return;
+    }
 
     try {
       const res = await fetch('/api/gmail/oauth/callback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code: manualCode.trim() || undefined,
-          simulatedEmail: manualEmail.trim(),
-        }),
+        body: JSON.stringify({ code }),
       });
       const data = await res.json();
-      if (data.success && data.account) {
-        // Immediate Supabase UPSERT into gmail_tokens table
-        const client = getSupabase();
-        if (client) {
-          await client.from('gmail_tokens').upsert({
-            id: data.account.id,
-            email: data.account.email,
-            label: data.account.label || `Google Workspace (${data.account.email.split('@')[0]})`,
-            connected: true,
-            connected_at: new Date().toISOString(),
-            daily_send_quota: 500,
-            sent_today: 0,
-            inbox_unread_count: 0,
-            reply_watcher_active: true,
-            last_sync_at: new Date().toISOString(),
-            is_primary: true,
-            token_scope: 'https://mail.google.com/',
-            refresh_token: `manual_refresh_${Date.now()}`,
-            access_token: `manual_access_${Date.now()}`,
-          });
-        }
-
-        setManualEmail('');
-        setManualLabel('');
-        setManualCode('');
-        setIsManualModalOpen(false);
-        await onRefreshData();
-        setOauthStatus({
-          type: 'success',
-          message: `Successfully connected ${data.account?.email || 'Gmail account'} with OAuth Refresh Token and saved to Supabase!`
-        });
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Google OAuth code exchange failed.');
       }
+
+      setManualEmail('');
+      setManualLabel('');
+      setManualCode('');
+      setIsManualModalOpen(false);
+      await onRefreshData();
+      setOauthStatus({
+        type: 'success',
+        message: `Successfully connected ${data.account?.email || 'Google Workspace'} using real Google OAuth.`
+      });
     } catch (err: any) {
-      setOauthStatus({ type: 'error', message: err.message || 'Failed to connect account.' });
+      setOauthStatus({ type: 'error', message: err.message || 'Failed to connect Gmail account.' });
     }
   };
 
