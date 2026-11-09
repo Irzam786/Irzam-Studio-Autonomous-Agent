@@ -1359,7 +1359,7 @@ app.get('/api/gmail/accounts', async (_req, res) => {
           subject: r.subject || 'Follow-up',
           snippet: r.snippet || '',
           intent: (r.intent as any) || 'NEUTRAL',
-          detectedAt: r.received_at || new Date().toISOString(),
+          detectedAt: r.detected_at || new Date().toISOString(),
           status: (r.status as any) || 'unread',
           suggestedResponse: r.suggested_response || undefined,
         }));
