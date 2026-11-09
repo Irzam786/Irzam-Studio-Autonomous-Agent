@@ -654,18 +654,17 @@ async function verifyOwnerPin(suppliedPin: string): Promise<{ success: boolean; 
 
 async function getLatestAuthVersion(): Promise<number> {
   const db = getSupabaseServerClient();
-  if (!db) return 1;
-  try {
-    const { data } = await db.from('owner_auth_settings').select('auth_version').eq('id', 1).maybeSingle();
-    return data?.auth_version || 1;
-  } catch {
-    return 1;
-  }
+  if (!db) throw new Error('Authentication database is unavailable.');
+  const { data, error } = await db.from('owner_auth_settings').select('auth_version').eq('id', 1).maybeSingle();
+  if (error) throw error;
+  return data?.auth_version || 1;
 }
 
 function verifySessionToken(token: string, currentAuthVersion: number = 1): { valid: boolean; expiresAt: number } {
   const parts = token.split('.');
   if (parts.length === 2) {
+    // Legacy pre-versioned sessions are valid only until the first PIN rotation.
+    if (currentAuthVersion !== 1) return { valid: false, expiresAt: 0 };
     const [expiresAt, signature] = parts;
     const expires = Number(expiresAt);
     if (!Number.isFinite(expires) || expires <= Date.now()) return { valid: false, expiresAt: 0 };
