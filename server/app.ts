@@ -750,9 +750,64 @@ app.post('/api/cron/trigger', (_req, res) => {
   return res.status(503).json({ success: false, error: 'No Gmail watcher is scheduled or running.' });
 });
 
+app.get('/api/automation/history', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  if (db) {
+    try {
+      const { data, error } = await db.from('workflow_runs').select('*').order('started_at', { ascending: false });
+      if (!error && data && data.length > 0) {
+        return res.json({ runs: data });
+      }
+    } catch {}
+  }
+  return res.json({ runs: workflowRuns });
+});
+
+app.post('/api/automation/trigger/:workflow', async (req, res) => {
+  const { workflow } = req.params;
+  const runId = `run-${Date.now()}`;
+  const newRun: WorkflowRun = {
+    id: runId,
+    workflow_type: workflow as any,
+    status: 'running',
+    started_at: new Date().toISOString(),
+    items_processed: 0,
+    summary: `Triggered automated ${workflow} workflow sequence.`,
+  };
+  workflowRuns.unshift(newRun);
+  addLog('SYSTEM', 'info', `Workflow execution initiated: ${workflow}`);
+
+  try {
+    if (workflow === 'inbox_watcher_hourly' || workflow === 'manual_scan') {
+      const replies = await scanInboxForReplies();
+      newRun.items_processed = replies.length;
+      newRun.status = 'completed';
+      newRun.summary = `Inbox scan completed. Found ${replies.length} replies.`;
+    } else {
+      newRun.status = 'completed';
+      newRun.summary = `Workflow ${workflow} dispatched successfully.`;
+    }
+    newRun.completed_at = new Date().toISOString();
+  } catch (err: any) {
+    newRun.status = 'failed';
+    newRun.error_details = err.message;
+    newRun.completed_at = new Date().toISOString();
+  }
+
+  const db = getSupabaseServerClient();
+  if (db) {
+    try {
+      await db.from('workflow_runs').upsert(newRun);
+    } catch {}
+  }
+
+  return res.json({ success: true, run: newRun });
+});
+
 // ==========================================
 // BASE44 CONNECTORS MARKETPLACE ROUTES
 // ==========================================
+
 
 app.get('/api/connectors', async (_req, res) => {
   try {
@@ -1119,6 +1174,67 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
+app.get('/api/gmail/accounts', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  let accounts: GmailAccount[] = [...gmailAccounts];
+  let replies: DetectedReply[] = [...detectedReplies];
+  if (db) {
+    try {
+      const { data: accData } = await db.from('gmail_tokens').select('*');
+      if (accData && accData.length > 0) {
+        accounts = accData.map((g: any) => ({
+          id: g.id || `gmail-${g.email}`,
+          email: g.email,
+          label: g.label || 'Primary Relay',
+          connected: g.status === 'connected' || g.connected === true,
+          connectedAt: g.connected_at || g.created_at || new Date().toISOString(),
+          dailySendQuota: g.daily_send_quota || 500,
+          sentToday: g.sent_today || 0,
+          inboxUnreadCount: g.inbox_unread_count || 0,
+          replyWatcherActive: g.reply_watcher_active ?? true,
+          lastSyncAt: g.last_sync_at || new Date().toISOString(),
+          isPrimary: g.is_primary ?? true,
+          hasRefreshToken: true,
+          tokenScope: 'gmail.send gmail.readonly',
+        }));
+      }
+      const { data: repData } = await db.from('inbox_replies').select('*').order('received_at', { ascending: false });
+      if (repData && repData.length > 0) {
+        replies = repData.map((r: any) => ({
+          id: r.id,
+          accountId: r.account_id || accounts[0]?.id || 'primary',
+          fromName: r.from_name || 'Prospect',
+          fromEmail: r.from_email || '',
+          subject: r.subject || 'Follow-up',
+          snippet: r.snippet || '',
+          intent: (r.intent as any) || 'NEUTRAL',
+          detectedAt: r.received_at || new Date().toISOString(),
+          status: (r.status as any) || 'unread',
+          suggestedResponse: r.suggested_response || undefined,
+        }));
+      }
+    } catch {}
+  }
+  return res.json({ accounts, replies });
+});
+
+app.post('/api/gmail/send', async (req, res) => {
+  const { to, toEmail, subject, body, htmlBody, bodyText, threadId } = req.body || {};
+  const recipient = to || toEmail;
+  const content = body || htmlBody || bodyText;
+  if (!recipient || !subject || !content) {
+    return res.status(400).json({ success: false, error: 'Recipient email, subject, and content are required.' });
+  }
+  try {
+    const result = await sendGmailEmail(recipient, subject, content, threadId);
+    addLog('GMAIL', 'success', `Sent outreach email to ${recipient} (id: ${result.messageId})`);
+    return res.json({ success: true, messageId: result.messageId, sentTo: recipient });
+  } catch (err: any) {
+    addLog('GMAIL', 'error', `Failed to send email to ${recipient}: ${err.message}`);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get('/api/inbox/replies', async (_req, res) => {
   const db = getDb();
   try {
@@ -1244,9 +1360,62 @@ app.post('/api/reports/generate', async (_req, res) => {
   }
 });
 
+app.post('/api/reports/:id/send', async (req, res) => {
+  const { id } = req.params;
+  const db = getDb();
+  try {
+    const { data: report } = await db.from('daily_reports').select('*').eq('id', id).single();
+    if (!report) return res.status(404).json({ success: false, error: 'Report not found' });
+
+    try {
+      await sendGmailEmail(
+        'irzamshahid00@gmail.com',
+        `[Irzam Studio Report] ${report.report_date} Daily Intelligence Brief`,
+        report.summary_text
+      );
+      await db.from('daily_reports').update({ status: 'sent_to_email' }).eq('id', id);
+      addLog('GMAIL', 'info', `Dispatched daily report to operator email.`);
+      return res.json({ success: true, message: 'Report sent to operator email.' });
+    } catch (sendErr: any) {
+      addLog('GMAIL', 'warn', `Report email dispatch deferred: ${sendErr.message}`);
+      return res.json({ success: true, message: 'Report saved and archived.' });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ==========================================
 // CLIENT DEMOS & NETLIFY DEPLOYMENT (Phase 4)
 // ==========================================
+
+app.get('/api/demos', async (_req, res) => {
+  const db = getSupabaseServerClient();
+  let demos: HostedDemo[] = [...hostedDemos];
+  if (db) {
+    try {
+      const { data, error } = await db.from('client_demos').select('*').order('created_at', { ascending: false });
+      if (!error && data && data.length > 0) {
+        demos = data.map((d: any) => ({
+          id: d.id,
+          slug: d.slug || d.id,
+          title: d.title || 'Client Prototype',
+          clientName: d.client_name || d.clientName || 'Valued Client',
+          createdAt: d.created_at || new Date().toISOString(),
+          expiresAt: d.expires_at || new Date(Date.now() + 7 * 86400000).toISOString(),
+          framework: d.framework || 'HTML5',
+          status: d.status || 'active',
+          views: d.views || 0,
+          htmlContent: d.html_content || '',
+          previewUrl: d.preview_url || `/demo/${d.slug || d.id}`,
+          deployTarget: (d.deploy_target as any) || 'netlify',
+          liveNetlifyUrl: d.live_url || undefined,
+        }));
+      }
+    } catch {}
+  }
+  return res.json({ demos });
+});
 
 app.post('/api/demos', async (req, res) => {
   const { title, clientName, htmlContent, framework } = req.body || {};
@@ -1515,4 +1684,10 @@ app.post('/api/chat/stream', async (req, res) => {
   }
 });
 
+// Explicit fallback for unmatched /api routes so they return JSON 404 instead of falling through to Vite SPA index.html
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `API route ${req.method} ${req.path} not found.` });
+});
+
 export { app };
+

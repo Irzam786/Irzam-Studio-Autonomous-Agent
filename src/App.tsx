@@ -208,6 +208,17 @@ export default function App() {
     setTimeout(() => setNotificationBanner(null), 4000);
   };
 
+  const safeJson = async <T,>(res: Response): Promise<T | null> => {
+    if (!res.ok) return null;
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) return null;
+    try {
+      return (await res.json()) as T;
+    } catch {
+      return null;
+    }
+  };
+
   // Fetch all comprehensive data from backend
   const fetchAllData = async () => {
     try {
@@ -218,15 +229,15 @@ export default function App() {
         setIsAuthenticated(false);
         return;
       }
-      if (statusRes.ok) {
-        const sData = await statusRes.json();
+      const sData = await safeJson<{ cron: CronStatus }>(statusRes);
+      if (sData) {
         setCronStatus(sData.cron);
       }
 
       // 2. Config
       const configRes = await authFetch('/api/config');
-      if (configRes.ok) {
-        const cData = await configRes.json();
+      const cData = await safeJson<SystemConfig>(configRes);
+      if (cData) {
         setConfig(cData);
         if (cData.selectedModel) setSelectedModel(cData.selectedModel);
         if (cData.supabase?.url && cData.supabase?.anonKey) {
@@ -236,78 +247,78 @@ export default function App() {
 
       // 3. Connectors
       const connRes = await authFetch('/api/connectors');
-      if (connRes.ok) {
-        const connData = await connRes.json();
+      const connData = await safeJson<{ connectors: ConnectorInfo[] }>(connRes);
+      if (connData) {
         setConnectors(connData.connectors || []);
       }
 
       // 4. Operational Rules & Training Messages
       const rulesRes = await authFetch('/api/training/rules');
-      if (rulesRes.ok) {
-        const rulesData = await rulesRes.json();
+      const rulesData = await safeJson<{ rules: AgentRule[] }>(rulesRes);
+      if (rulesData) {
         setAgentRules(rulesData.rules || []);
       }
 
       const tMsgRes = await authFetch('/api/training/messages');
-      if (tMsgRes.ok) {
-        const tMsgData = await tMsgRes.json();
+      const tMsgData = await safeJson<{ messages: TrainingMessage[] }>(tMsgRes);
+      if (tMsgData) {
         setTrainingMessages(tMsgData.messages || []);
       }
 
       // 5. Campaigns
       const campRes = await authFetch('/api/campaigns');
-      if (campRes.ok) {
-        const campData = await campRes.json();
+      const campData = await safeJson<{ campaigns: Campaign[] }>(campRes);
+      if (campData) {
         setCampaigns(campData.campaigns || []);
       }
 
       // 6. Outreach Queue
       const queueRes = await authFetch('/api/outreach/queue');
-      if (queueRes.ok) {
-        const qData = await queueRes.json();
+      const qData = await safeJson<{ queue: OutreachQueueItem[] }>(queueRes);
+      if (qData) {
         setOutreachQueue(qData.queue || []);
       }
 
       // 7. Reports
       const repRes = await authFetch('/api/reports');
-      if (repRes.ok) {
-        const repData = await repRes.json();
+      const repData = await safeJson<{ reports: DailyReport[] }>(repRes);
+      if (repData) {
         setDailyReports(repData.reports || []);
       }
 
       // 8. Automation Workflow Runs & Logs
       const wfRes = await authFetch('/api/automation/history');
-      if (wfRes.ok) {
-        const wfData = await wfRes.json();
+      const wfData = await safeJson<{ runs: WorkflowRun[] }>(wfRes);
+      if (wfData) {
         setWorkflowRuns(wfData.runs || []);
       }
 
       const logsRes = await authFetch('/api/logs');
-      if (logsRes.ok) {
-        const lData = await logsRes.json();
-        setSystemLogs(lData.logs || []);
+      const logsData = await safeJson<{ logs: LogEntry[] }>(logsRes);
+      if (logsData) {
+        setSystemLogs(logsData.logs || []);
       }
 
       // 9. Demos
       const demosRes = await authFetch('/api/demos');
-      if (demosRes.ok) {
-        const dData = await demosRes.json();
+      const dData = await safeJson<{ demos: HostedDemo[] }>(demosRes);
+      if (dData) {
         setHostedDemos(dData.demos || []);
       }
 
       // 10. Gmail & Replies
       const gmailRes = await authFetch('/api/gmail/accounts');
-      if (gmailRes.ok) {
-        const gData = await gmailRes.json();
+      const gData = await safeJson<{ accounts: GmailAccount[]; replies: DetectedReply[] }>(gmailRes);
+      if (gData) {
         setGmailAccounts(gData.accounts || []);
         setDetectedReplies(gData.replies || []);
       }
 
       // 11. Leads
       const leadsRes = await authFetch('/api/leads');
-      if (leadsRes.ok) {
-        const lData = await leadsRes.json();
-        setLeads(lData.leads || []);
+      const leadsData = await safeJson<{ leads: Lead[] }>(leadsRes);
+      if (leadsData) {
+        setLeads(leadsData.leads || []);
       }
     } catch (err) {
       console.error('Data fetch notice:', err);
