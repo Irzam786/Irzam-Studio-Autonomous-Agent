@@ -15,7 +15,7 @@ def main():
         print("SUPABASE_SERVICE_ROLE_KEY missing; aborting")
         sys.exit(1)
     store = SupabaseStore()
-    tools = ToolRegistry()
+    tools = ToolRegistry(store)
     orchestrator = Orchestrator(store, tools)
     
     # Process due jobs through real Orchestrator
