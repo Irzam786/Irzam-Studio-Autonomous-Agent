@@ -1,18 +1,25 @@
-from typing import Callable, Dict, Any, List, Optional
-import json
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.connectors.google_places import search_businesses_google_places
 from agent.connectors.tavily_search import research_business_web
 from agent.connectors.email_finder import find_email_hunter, find_email_prospeo
-from agent.connectors.netlify_deploy import deploy_client_demo_netlify
-from agent.connectors.gmail_relay import send_gmail_outreach, scan_gmail_replies, classify_reply_intent
 
 
 class ToolRegistry:
-    def __init__(self):
+    """Allowlisted read/research tools. Credentials are fetched server-side, never from model arguments."""
+
+    def __init__(self, store=None):
+        self.store = store
         self.tools: Dict[str, Callable] = {}
         self.schemas: Dict[str, Dict[str, Any]] = {}
         self._register_default_tools()
+
+    def _secret(self, name: str, env_name: str) -> str:
+        value = None
+        if self.store:
+            value = self.store.get_secret(name)
+        import os
+        return value or os.environ.get(env_name, "")
 
     def register(self, name: str, fn: Callable, schema: Optional[Dict[str, Any]] = None):
         self.tools[name] = fn
@@ -24,142 +31,82 @@ class ToolRegistry:
 
     def execute(self, name: str, args: Dict[str, Any]) -> Any:
         if name not in self.tools:
-            raise ValueError(f"Unknown tool: {name}")
-        return self.tools[name](**args)
+            raise ValueError(f"Unknown or disallowed tool: {name}")
+        return self.tools[name](**(args or {}))
 
     def get_definitions(self) -> List[Dict[str, Any]]:
         return list(self.schemas.values())
 
+    def _places(self, query: str, min_reviews: int = 50, min_rating: float = 4.0):
+        key = self._secret("irzam_google_maps_api_key", "GOOGLE_MAPS_API_KEY")
+        if not key:
+            raise RuntimeError("Google Places connector is not configured.")
+        return search_businesses_google_places(query, api_key=key, min_reviews=min_reviews, min_rating=min_rating)
+
+    def _research(self, business_name: str, city: str = "", domain: str = ""):
+        key = self._secret("irzam_tavily_api_key", "TAVILY_API_KEY")
+        if not key:
+            raise RuntimeError("Tavily connector is not configured.")
+        return research_business_web(business_name, city=city, domain=domain, api_key=key)
+
+    def _hunter(self, domain: str):
+        key = self._secret("irzam_hunter_api_key", "HUNTER_API_KEY")
+        if not key:
+            raise RuntimeError("Hunter.io connector is not configured.")
+        return find_email_hunter(domain, api_key=key)
+
+    def _prospeo(self, first_name: str, last_name: str, domain: str):
+        key = self._secret("irzam_prospeo_api_key", "PROSPEO_API_KEY")
+        if not key:
+            raise RuntimeError("Prospeo connector is not configured.")
+        return find_email_prospeo(first_name, last_name, domain, api_key=key)
+
     def _register_default_tools(self):
-        # 1. Google Places Discovery Tool
-        self.register(
-            "search_businesses_google_places",
-            search_businesses_google_places,
-            {
-                "name": "search_businesses_google_places",
-                "description": "Finds real business records using Google Places API (New) with minimum review filtering.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Search query like 'plumbers in Dallas TX'"},
-                        "min_reviews": {"type": "integer", "description": "Minimum review count, default 50"},
-                        "min_rating": {"type": "number", "description": "Minimum rating, default 4.0"}
-                    },
-                    "required": ["query"]
-                }
-            }
-        )
-
-        # 2. Tavily Web Research Tool
-        self.register(
-            "research_business_web",
-            research_business_web,
-            {
-                "name": "research_business_web",
-                "description": "Performs deep web research via Tavily to verify business sites and leadership.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "business_name": {"type": "string"},
-                        "city": {"type": "string"},
-                        "domain": {"type": "string"}
-                    },
-                    "required": ["business_name"]
-                }
-            }
-        )
-
-        # 3. Hunter.io Email Finder
-        self.register(
-            "find_email_hunter",
-            find_email_hunter,
-            {
-                "name": "find_email_hunter",
-                "description": "Finds corporate contact email using Hunter.io for a company domain.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "domain": {"type": "string", "description": "Company domain name like example.com"}
-                    },
-                    "required": ["domain"]
-                }
-            }
-        )
-
-        # 4. Prospeo Email Finder
-        self.register(
-            "find_email_prospeo",
-            find_email_prospeo,
-            {
-                "name": "find_email_prospeo",
-                "description": "Finds executive email using Prospeo B2B intelligence.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "first_name": {"type": "string"},
-                        "last_name": {"type": "string"},
-                        "domain": {"type": "string"}
-                    },
-                    "required": ["first_name", "last_name", "domain"]
-                }
-            }
-        )
-
-        # 5. Netlify Client Demo Deployer
-        self.register(
-            "deploy_client_demo_netlify",
-            deploy_client_demo_netlify,
-            {
-                "name": "deploy_client_demo_netlify",
-                "description": "Deploys an interactive client demo website to Netlify edge and returns live URL.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "site_name": {"type": "string"},
-                        "html_content": {"type": "string"}
-                    },
-                    "required": ["site_name", "html_content"]
-                }
-            }
-        )
-
-        # 6. Gmail Outreach Sender
-        self.register(
-            "send_gmail_outreach",
-            send_gmail_outreach,
-            {
-                "name": "send_gmail_outreach",
-                "description": "Sends cold outreach email via authorized Google Workspace Gmail account.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "access_token": {"type": "string"},
-                        "sender_email": {"type": "string"},
-                        "sender_name": {"type": "string"},
-                        "recipient_email": {"type": "string"},
-                        "subject": {"type": "string"},
-                        "body_text": {"type": "string"},
-                        "thread_id": {"type": "string"}
-                    },
-                    "required": ["access_token", "sender_email", "sender_name", "recipient_email", "subject", "body_text"]
-                }
-            }
-        )
-
-        # 7. Gmail Inbox Scanner
-        self.register(
-            "scan_gmail_replies",
-            scan_gmail_replies,
-            {
-                "name": "scan_gmail_replies",
-                "description": "Scans inbox for new replies from prospects.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "access_token": {"type": "string"},
-                        "query": {"type": "string"}
-                    },
-                    "required": ["access_token"]
-                }
-            }
-        )
+        self.register("search_businesses_google_places", self._places, {
+            "name": "search_businesses_google_places",
+            "description": "Search real Google business listings and filter by minimum rating and review count. Read-only.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Business search query including city/region"},
+                    "min_reviews": {"type": "integer", "description": "Minimum Google review count"},
+                    "min_rating": {"type": "number", "description": "Minimum Google star rating"},
+                },
+                "required": ["query"],
+            },
+        })
+        self.register("research_business_web", self._research, {
+            "name": "research_business_web",
+            "description": "Research a business's official website, contact pages and leadership using Tavily. Read-only.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "business_name": {"type": "string"},
+                    "city": {"type": "string"},
+                    "domain": {"type": "string"},
+                },
+                "required": ["business_name"],
+            },
+        })
+        self.register("find_email_hunter", self._hunter, {
+            "name": "find_email_hunter",
+            "description": "Find a business-domain contact email and verify the address with Hunter's email verifier.",
+            "parameters": {
+                "type": "object",
+                "properties": {"domain": {"type": "string"}},
+                "required": ["domain"],
+            },
+        })
+        self.register("find_email_prospeo", self._prospeo, {
+            "name": "find_email_prospeo",
+            "description": "Find a named business contact email and return the provider's email verification status.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "first_name": {"type": "string"},
+                    "last_name": {"type": "string"},
+                    "domain": {"type": "string"},
+                },
+                "required": ["first_name", "last_name", "domain"],
+            },
+        })
