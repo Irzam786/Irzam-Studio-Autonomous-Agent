@@ -256,7 +256,7 @@ export async function scanInboxForReplies(): Promise<InboxReplyRecord[]> {
       intent,
       status: 'unread',
     };
-    const { error: upsertError } = await db.from('inbox_replies').upsert(dbRecord, { onConflict: 'gmail_message_id' });
+    const { error: upsertError } = await db.from('inbox_replies').upsert(dbRecord, { onConflict: 'account_id,gmail_message_id' });
     if (upsertError) throw new Error(`Could not save Gmail reply ${detail.id}: ${upsertError.message}`);
     if (matchedLead) {
       const { error: leadUpdateError } = await db.from('leads')
