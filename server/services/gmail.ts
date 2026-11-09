@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { getDb, getVaultSecret, setVaultSecret } from './db';
 import { getDb, getVaultSecret, setVaultSecret } from './db';
 
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
@@ -7,14 +7,17 @@ const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const GOOGLE_USERINFO_ENDPOINT = 'https://www.googleapis.com/oauth2/v2/userinfo';
 
 export interface GmailAccountRecord {
-  id: string;
   email: string;
   label?: string;
+  connected: boolean;
+  connected_at: string;
+  daily_send_quota: number;
+  sent_today: number;
+  inbox_unread_count: number;
+  reply_watcher_active: boolean;
+  last_sync_at: string;
   is_primary: boolean;
-  is_active: boolean;
-  status: 'connected' | 'error' | 'disconnected';
-  last_sync_at?: string;
-  error_message?: string;
+  token_scope: string;
 }
 
 export interface InboxReplyRecord {
@@ -105,26 +108,35 @@ export async function exchangeOAuthCode(code: string): Promise<{ success: boolea
   const userData = userRes.ok ? await userRes.json() : {};
   const email = userData.email || 'connected_account@gmail.com';
 
+  const perAccountSecret = `irzam_gmail_token_${email}`;
+  const existingRefreshToken = (await getVaultSecret(perAccountSecret)) || (await getVaultSecret('irzam_gmail_refresh_token'));
   if (refreshToken) {
-    await setVaultSecret(`irzam_gmail_token_${email}`, refreshToken, `Gmail refresh token for ${email}`);
-    await setVaultSecret('irzam_gmail_refresh_token', refreshToken, 'Default primary Gmail refresh token');
+    const accountSecretSaved = await setVaultSecret(perAccountSecret, refreshToken, `Gmail refresh token for ${email}`);
+    const primarySecretSaved = await setVaultSecret('irzam_gmail_refresh_token', refreshToken, 'Default primary Gmail refresh token');
+    if (!accountSecretSaved || !primarySecretSaved) {
+      throw new Error('Gmail refresh token could not be stored securely in Supabase Vault.');
+    }
+  } else if (!existingRefreshToken) {
+    throw new Error('Google did not return a refresh token. Remove this app from Google Account access and reconnect with consent.');
   }
 
   const db = getDb();
   const accountRecord: GmailAccountRecord = {
-    id: `gmail-${randomUUID().slice(0, 8)}`,
     email,
     label: 'Primary Gmail Relay',
-    is_primary: true,
-    is_active: true,
-    status: 'connected',
+    connected: true,
+    connected_at: new Date().toISOString(),
+    daily_send_quota: 500,
+    sent_today: 0,
+    inbox_unread_count: 0,
+    reply_watcher_active: true,
     last_sync_at: new Date().toISOString(),
+    is_primary: true,
+    token_scope: 'gmail.send gmail.readonly userinfo.email',
   };
-
-  try {
-    await db.from('gmail_tokens').upsert(accountRecord, { onConflict: 'email' });
-  } catch (err) {
-    console.warn('[GMAIL] Supabase record save warning:', err);
+  const { error: saveError } = await db.from('gmail_tokens').upsert(accountRecord, { onConflict: 'email' });
+  if (saveError) {
+    throw new Error(`Gmail token was saved but account registration failed: ${saveError.message}`);
   }
 
   return { success: true, email };
@@ -178,14 +190,20 @@ export async function scanInboxForReplies(): Promise<InboxReplyRecord[]> {
   const messages = listData.messages || [];
   const db = getDb();
 
-  // Load existing leads to match sender
-  let trackedLeads: any[] = [];
-  try {
-    const { data } = await db.from('leads').select('id, business_name, email');
-    trackedLeads = data || [];
-  } catch {}
+  const { data: accounts, error: accountError } = await db
+    .from('gmail_tokens')
+    .select('id,email')
+    .eq('connected', true)
+    .order('is_primary', { ascending: false })
+    .limit(1);
+  if (accountError) throw new Error(`Could not load the connected Gmail account: ${accountError.message}`);
+  const account = (accounts || [])[0];
+  if (!account) throw new Error('No connected Gmail account is registered in Supabase.');
 
-  const leadEmailMap = new Map(trackedLeads.map((l) => [l.email?.toLowerCase(), l]));
+  // Load existing leads to match the sender.
+  const { data: trackedLeads, error: leadsError } = await db.from('leads').select('id, business_name, email');
+  if (leadsError) throw new Error(`Could not load leads for inbox matching: ${leadsError.message}`);
+  const leadEmailMap = new Map((trackedLeads || []).map((lead: any) => [lead.email?.toLowerCase(), lead]));
   const replies: InboxReplyRecord[] = [];
 
   for (const m of messages) {
@@ -209,10 +227,10 @@ export async function scanInboxForReplies(): Promise<InboxReplyRecord[]> {
     const intent = classifyReplyIntent(snippet);
 
     const replyRecord: InboxReplyRecord = {
-      id: `reply-${detail.id}`,
-      account_id: 'primary',
+      id: detail.id,
+      account_id: account.id,
       gmail_message_id: detail.id,
-      thread_id: detail.threadId,
+      thread_id: detail.threadId || '',
       from_name: fromName,
       from_email: senderEmail,
       subject,
@@ -226,26 +244,40 @@ export async function scanInboxForReplies(): Promise<InboxReplyRecord[]> {
 
     replies.push(replyRecord);
 
-    try {
-      await db.from('inbox_replies').upsert(replyRecord, { onConflict: 'gmail_message_id' });
-      if (matchedLead) {
-        await db.from('leads').update({ status: 'replied', updated_at: new Date().toISOString() }).eq('id', matchedLead.id);
-      }
-    } catch {}
+    // The production table has UUID-generated IDs and no lead_id/company_name/received_at columns.
+    const dbRecord = {
+      account_id: account.id,
+      gmail_message_id: detail.id,
+      thread_id: detail.threadId || null,
+      from_name: fromName,
+      from_email: senderEmail,
+      subject,
+      snippet,
+      intent,
+      status: 'unread',
+    };
+    const { error: upsertError } = await db.from('inbox_replies').upsert(dbRecord, { onConflict: 'gmail_message_id' });
+    if (upsertError) throw new Error(`Could not save Gmail reply ${detail.id}: ${upsertError.message}`);
+    if (matchedLead) {
+      const { error: leadUpdateError } = await db.from('leads')
+        .update({ status: 'replied', updated_at: new Date().toISOString() })
+        .eq('id', matchedLead.id);
+      if (leadUpdateError) throw new Error(`Could not update replied lead: ${leadUpdateError.message}`);
+    }
   }
 
   return replies;
 }
 
 export function classifyReplyIntent(snippet: string): string {
-  const text = snippet.toLowerCase();
-  if (/unsubscribe|remove me|stop emailing|opt[- ]?out|do not contact/i.test(text)) return 'OPT_OUT';
+  const text = (snippet || '').toLowerCase();
+  // Match the exact intent values allowed by the live public.inbox_replies constraint.
+  if (/unsubscribe|remove me|stop emailing|opt[- ]?out|do not contact/i.test(text)) return 'UNSUBSCRIBE';
   if (/how much|pricing|cost|rates|package|quote|fee/i.test(text)) return 'PRICING_INQUIRY';
   if (/call|schedule|zoom|meeting|calendar|time to speak|chat tomorrow/i.test(text)) return 'SCHEDULE_CALL';
-  if (/interested|send demo|send preview|show me|tell me more|looks good/i.test(text)) return 'POSITIVE_INTEREST';
-  if (/not interested|no thanks|pass|already have/i.test(text)) return 'NOT_INTERESTED';
-  if (/delivery status notification|undeliverable|failure/i.test(text)) return 'BOUNCE';
-  return 'GENERAL_INQUIRY';
+  if (/not interested|no thanks|pass|already have/i.test(text)) return 'OBJECTION';
+  if (/interested|send demo|send preview|show me|tell me more|looks good/i.test(text)) return 'HIGH_INTEREST';
+  return 'NEUTRAL';
 }
 
 export async function sendGmailEmail(
