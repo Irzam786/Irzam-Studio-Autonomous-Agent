@@ -392,10 +392,13 @@ AUTONOMOUS TOOL POLICY:
     }
   };
 
+  const getPersistedDatabase = (): any => taskDb;
+
   const recordEvent = async (eventType: string, eventMessage: string, payload: Record<string, any> = {}) => {
-    if (!taskPersisted || !taskDb) return;
+    const db = getPersistedDatabase();
+    if (!taskPersisted || !db) return;
     try {
-      await taskDb.from('agent_task_events').insert({
+      await db.from('agent_task_events').insert({
         task_id: taskId,
         event_type: eventType,
         message: eventMessage,
@@ -487,9 +490,10 @@ AUTONOMOUS TOOL POLICY:
         ? value.map((part: any) => part?.text || '').join('')
         : '';
     if (!content.trim()) throw new Error('Qwen returned neither a tool call nor a final response.');
-    if (taskPersisted && taskDb) {
+    const completedTaskDb = getPersistedDatabase();
+    if (taskPersisted && completedTaskDb) {
       try {
-        await taskDb.from('agent_tasks').update({
+        await completedTaskDb.from('agent_tasks').update({
           status: 'completed',
           state: { provider: 'freellm_qwen', model: modelReturned, last_answer: content.slice(0, 8000) },
           checkpoint: { iterations: iteration + 1, tools_used: toolsUsed },
@@ -503,9 +507,10 @@ AUTONOMOUS TOOL POLICY:
   }
 
   const pausedContent = 'I have reached the safe tool-use limit for this request. Please narrow the task or ask me to continue with the remaining businesses.';
-  if (taskPersisted && taskDb) {
+  const pausedTaskDb = getPersistedDatabase();
+  if (taskPersisted && pausedTaskDb) {
     try {
-      await taskDb.from('agent_tasks').update({
+      await pausedTaskDb.from('agent_tasks').update({
         status: 'paused',
         checkpoint: { iterations: MAX_TOOL_ITERATIONS, tools_used: toolsUsed, reason: 'max_iterations_reached' },
         updated_at: new Date().toISOString(),
