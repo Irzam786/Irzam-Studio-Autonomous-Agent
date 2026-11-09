@@ -68,7 +68,11 @@ class Orchestrator:
 
     def _handle_daily_lead_discovery(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         # 1. Resolve credentials securely from Vault
-        api_key = self.store.get_secret("irzam_google_maps_key") or self.store.get_secret("google_maps_api_key")
+        api_key = (
+            self.store.get_secret("irzam_google_maps_api_key")
+            or self.store.get_secret("irzam_google_maps_key")
+            or self.store.get_secret("google_maps_api_key")
+        )
         query = payload.get("query") or payload.get("search_query") or "software development agency in Dallas TX"
         min_reviews = int(payload.get("min_reviews", 50))
         min_rating = float(payload.get("min_rating", 4.0))
@@ -91,7 +95,7 @@ class Orchestrator:
                 # Deduplicate and persist genuine lead into public.leads table
                 saved = self.store.save_lead({
                     "business_name": l["business_name"],
-                    "email": l.get("email") or f"contact@{l.get('website', '').replace('https://', '').replace('http://', '').split('/')[0] or 'lead.local'}",
+                    "email": l.get("email"),
                     "phone": l.get("phone", ""),
                     "city": payload.get("city", "Dallas"),
                     "niche": payload.get("niche", "Technology"),
@@ -100,8 +104,8 @@ class Orchestrator:
                     "google_rating": l.get("rating"),
                     "google_reviews_count": l.get("review_count", 0),
                     "website": l.get("website", ""),
-                    "email_source": "google_places_research",
-                    "email_verified": False,
+                    "email_source": l.get("email_source"),
+                    "email_verified": bool(l.get("email_verified", False)),
                     "notes": f"Discovered by Irzam Studio autonomous agent via Google Places. Reviews: {l.get('review_count')}."
                 })
                 if saved:
@@ -159,8 +163,12 @@ class Orchestrator:
                     }, on_conflict="gmail_message_id").execute()
 
                     # Check opt-out or bounce
-                    if r.get("intent") in ["NOT_INTERESTED", "BOUNCE"]:
-                        self.store.suppress_email(r.get("from_email"), reason="opt_out" if r.get("intent") == "NOT_INTERESTED" else "bounce")
+                    intent = str(r.get("intent", "")).lower()
+                    if intent in ["not_interested", "opt_out", "bounce"]:
+                        self.store.suppress_email(
+                            r.get("from_email"),
+                            reason="bounce" if intent == "bounce" else "opt_out"
+                        )
 
                     total_replies += 1
 
@@ -179,9 +187,10 @@ class Orchestrator:
             return {"summary": "Database unavailable.", "items_processed": 0}
 
         # Check for due outreach queue items
+        now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
         queue_res = self.store.client.table("outreach_queue").select("*")\
             .eq("status", "scheduled")\
-            .lte("scheduled_for_pkt", "now()")\
+            .lte("scheduled_for_pkt", now_utc)\
             .order("scheduled_for_pkt", desc=False)\
             .limit(1)\
             .execute()
@@ -204,6 +213,15 @@ class Orchestrator:
             }).eq("id", item["id"]).execute()
             return {"summary": f"Email to {recipient} suppressed due to opt-out.", "items_processed": 1}
 
+        # Require a genuinely verified contact before any live send.
+        if not recipient or not item.get("lead_id"):
+            return {"summary": "Outreach blocked: recipient or linked lead is missing.", "items_processed": 0}
+        lead_res = self.store.client.table("leads").select("email,email_verified,email_source").eq("id", item["lead_id"]).limit(1).execute()
+        lead_rows = lead_res.data or []
+        lead = lead_rows[0] if lead_rows else None
+        if not lead or str(lead.get("email", "")).strip().lower() != str(recipient).strip().lower() or lead.get("email_verified") is not True:
+            return {"summary": "Outreach blocked: lead email is not verified in the database.", "items_processed": 0}
+
         # 2. Check connected Gmail account & token
         acc_res = self.store.client.table("gmail_tokens").select("*").eq("connected", True).limit(1).execute()
         accounts = acc_res.data or []
@@ -224,26 +242,23 @@ class Orchestrator:
                 "items_processed": 0
             }
 
-        # If in DRY_RUN mode, simulate dispatch safely without sending unsolicited email
+        # A dry run must never mutate an item into the "sent" state.
         if DRY_RUN:
-            self.store.client.table("outreach_queue").update({
-                "status": "sent",
-                "sent_at": "now()",
-                "sent_via_email": acc["email"],
-                "error_message": "Dispatched in verified DRY_RUN mode."
-            }).eq("id", item["id"]).execute()
-            return {"summary": f"[DRY_RUN] Verified eligible outreach slot for {recipient}.", "items_processed": 1}
+            print(f"[DRY_RUN] Eligible outreach item {item['id']} was not sent; queue remains scheduled.")
+            return {"summary": f"[DRY_RUN] Eligible outreach to {recipient}; no email was sent and queue was left unchanged.", "items_processed": 0}
 
         try:
             access_token = refresh_gmail_access_token(client_id, client_secret, refresh_token)
             send_result = send_gmail_outreach(
                 access_token=access_token,
                 sender_email=acc["email"],
-                sender_name="Alex Carter" if payload.get("market") == "foreign" else "Irzam Shahid",
+                sender_name="Irzam Studio",
                 recipient_email=recipient,
                 subject=item.get("subject", "Introduction"),
                 body_text=item.get("body", "")
             )
+            if not send_result or send_result.get("success") is not True:
+                raise RuntimeError("Gmail did not confirm successful delivery acceptance.")
             # Update queue record
             self.store.client.table("outreach_queue").update({
                 "status": "sent",
@@ -270,9 +285,41 @@ class Orchestrator:
             raise RuntimeError(f"Email dispatch failed: {e}")
 
     def _handle_followup_processor(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.store.client:
+            return {"summary": "Database unavailable.", "items_processed": 0}
+
+        now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        due_res = self.store.client.table("outreach_queue").select("*")\
+            .eq("status", "sent")\
+            .not_.is_("next_followup_due", "null")\
+            .lte("next_followup_due", now_utc)\
+            .limit(25)\
+            .execute()
+        due_items = due_res.data or []
+        reviewed = 0
+        suppressed = 0
+
+        for item in due_items:
+            recipient = str(item.get("recipient_email") or "").strip().lower()
+            if not recipient:
+                continue
+            reply_res = self.store.client.table("inbox_replies").select("id,intent")\
+                .eq("from_email", recipient).limit(1).execute()
+            replies = reply_res.data or []
+            if replies:
+                intent = str(replies[0].get("intent") or "").lower()
+                new_status = "opted_out" if intent in ["opt_out", "not_interested", "bounce"] else "replied"
+                self.store.client.table("outreach_queue").update({
+                    "status": new_status
+                }).eq("id", item["id"]).execute()
+                if new_status == "opted_out":
+                    self.store.suppress_email(recipient, reason="bounce" if intent == "bounce" else "opt_out")
+                    suppressed += 1
+            reviewed += 1
+
         return {
-            "summary": "Follow-up processor evaluated. Verified all lead reply states.",
-            "items_processed": 0
+            "summary": f"Reviewed {reviewed} due follow-up records; {suppressed} were suppressed after an opt-out or bounce. No automatic follow-up email is sent by this review step.",
+            "items_processed": reviewed
         }
 
     def _handle_daily_report(self, payload: Dict[str, Any]) -> Dict[str, Any]:
