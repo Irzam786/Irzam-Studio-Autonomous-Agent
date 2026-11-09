@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://fgksgytuglpmzhqcdasb.supabase.co")
+SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://fgksgytuglpmzhqcdasb.supabase.co"
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY", "")
 
 TIMEZONE = ZoneInfo("Asia/Karachi")
