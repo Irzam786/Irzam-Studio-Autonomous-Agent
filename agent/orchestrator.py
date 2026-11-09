@@ -242,7 +242,7 @@ undefinedundefined
                         "snippet": reply.get("snippet", ""),
                         "intent": db_intents.get(raw_intent, "NEUTRAL"),
                         "status": "unread",
-                    }, on_conflict="gmail_message_id").execute()
+                    }, on_conflict="account_id,gmail_message_id").execute()
 
                     if raw_intent in ["not_interested", "opt_out", "bounce"]:
                         self.store.suppress_email(
