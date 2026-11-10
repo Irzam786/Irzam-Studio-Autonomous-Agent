@@ -274,6 +274,18 @@ npm run build
 
 These commands run the configured TypeScript check and frontend production build.
 
+## Tests
+
+The Python execution loop has a standard-library unit test suite covering final responses, registered tool execution, tool failure recovery, pause handling, invalid model responses, and iteration limits.
+
+Run it with:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+The GitHub Actions validation workflow also runs Python syntax checks and the agent unit tests alongside the TypeScript check and frontend production build.
+
 ## Configuration and security
 
 - Keep secrets in environment variables or the configured Supabase Vault flow.
