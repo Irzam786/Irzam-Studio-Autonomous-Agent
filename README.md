@@ -11,7 +11,7 @@
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-control%20plane-3178C6?logo=typescript&logoColor=white" />
   <img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" />
   <img alt="Supabase" src="https://img.shields.io/badge/Database-Supabase-3FCF8E?logo=supabase&logoColor=white" />
-  <img alt="License status" src="https://img.shields.io/badge/License-not%20specified-lightgrey" />
+  <img alt="License status" src="https://img.shields.io/badge/License-Apache--2.0-blue" />
 </p>
 
 <p align="center">
@@ -274,6 +274,18 @@ npm run build
 
 These commands run the configured TypeScript check and frontend production build.
 
+## Tests
+
+The Python test suite uses the standard library and mocks external HTTP calls. It covers the ReAct loop, provider adapter parsing and function-call schemas, tool allowlisting, server-side secret retrieval, and persistent task-state operations.
+
+Run it with:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+GitHub Actions runs the TypeScript check, frontend production build, Python syntax compilation, and unit tests. The repository also defines CodeQL analysis and Dependabot update automation.
+
 ## Configuration and security
 
 - Keep secrets in environment variables or the configured Supabase Vault flow.
@@ -328,6 +340,10 @@ Contributions, bug reports, and architectural feedback are welcome. Before propo
 2. Keep changes focused and include tests or reproducible validation where applicable.
 3. Document new tools, provider configuration, and required environment variables.
 4. Never include credentials or private operational data in commits or issue reports.
+
+## License
+
+This project is distributed under the **Apache License 2.0**. See [LICENSE](LICENSE) for the complete terms. Apache-2.0 is an OSI-approved permissive license that includes an express contributor patent grant. Third-party dependencies and provider services remain subject to their own licenses and terms.
 
 ## Project note
 

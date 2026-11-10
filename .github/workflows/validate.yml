@@ -35,3 +35,5 @@ jobs:
         run: pip install -r agent/requirements.txt
       - name: Check Python syntax
         run: python -m compileall -q agent
+      - name: Run agent unit tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
