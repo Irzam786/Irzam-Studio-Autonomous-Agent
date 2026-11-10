@@ -51,3 +51,8 @@ Do not include API keys, access tokens, OAuth refresh tokens, service-role crede
 - Keep agent execution bounded and observable.
 - Do not introduce live outbound actions into tests.
 - Document any new external integration and its required permissions.
+
+
+## License for contributions
+
+The project is licensed under Apache-2.0. Unless a contribution is explicitly marked otherwise by its copyright owner, contributions intentionally submitted for inclusion are offered under the same license, subject to Apache-2.0 Section 5. Contributors must have the right to submit the material they contribute and must preserve applicable third-party notices.
